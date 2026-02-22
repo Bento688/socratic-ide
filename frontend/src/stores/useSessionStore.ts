@@ -1,0 +1,283 @@
+import { create } from "zustand";
+import { immer } from "zustand/middleware/immer";
+import {
+  Session,
+  Message,
+  Persona,
+  HistoryStep,
+  LogType,
+  LogEntry,
+} from "../types";
+
+// helper to create a fresh session
+const createInitialSession = (
+  id: string,
+  persona: Persona = null,
+  title: string = "New Tab",
+): Session => ({
+  id,
+  title,
+  persona,
+  history: [
+    {
+      code: "// Select a mentor to begin...",
+      activeTask: "Pending Onboarding...",
+      language: "javascript",
+    },
+  ],
+  currentStep: 0,
+  messages: [],
+  logs: [],
+});
+
+interface SessionState {
+  // --- State ---
+  sessions: Session[];
+  activeSessionId: string;
+
+  // --- Tab Management ---
+  addSession: () => void;
+  removeSession: (id: string) => void;
+  switchSession: (id: string) => void;
+  updateSessionTitle: (id: string, title: string) => void;
+
+  // --- Workspace Actions (Operating on the Active Session) ---
+  setCode: (newCode: string) => void;
+  setActiveTask: (newTask: string) => void;
+  setLanguage: (newLang: string) => void;
+  setPersona: (newPersona: Persona) => void;
+
+  // --- History Navigation ---
+  navigateHistory: (direction: -1 | 1) => void;
+  advanceToNextLevel: (
+    newTask: string,
+    newCode: string,
+    newLanguage: string,
+  ) => void;
+
+  // --- Chat Actions ---
+  addMessage: (msg: Message) => void;
+  updateMessage: (msgId: string, updates: Partial<Message>) => void;
+  setMessages: (msgsOrFn: Message[] | ((prev: Message[]) => Message[])) => void;
+
+  // --- Terminal Actions ---
+  addLog: (type: LogType, message: string) => void;
+  clearLogs: () => void;
+}
+
+export const useSessionStore = create<SessionState>()(
+  immer((set) => ({
+    // Initial State
+    sessions: [createInitialSession("default-session")],
+    activeSessionId: "default-session",
+
+    // --- Tab Management ---
+    addSession: () =>
+      set((draft) => {
+        const newId = `session-${Date.now()}`;
+
+        // Find the current persona to inherit
+        const activeSession = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        const currentPersona = activeSession?.persona || null;
+
+        const newSession = createInitialSession(
+          newId,
+          currentPersona,
+          "New Tab",
+        );
+
+        // Agent reaction logic
+        if (currentPersona) {
+          newSession.messages.push({
+            id: `reaction-${Date.now()}`,
+            role: "model",
+            content:
+              currentPersona === "helios"
+                ? "### Context Switch Detected\nWhy did you change the topic? Giving up already? I knew I couldn't trust you.\n\n> What is this distraction about?"
+                : "### New Canvas\nBabe! did I give you a hard time? A fresh start then 🙄.\n\n> What shall we create here?",
+          });
+          newSession.history[0].activeTask = "Waiting for topic selection...";
+          newSession.history[0].code = `// Fresh start with ${currentPersona.toUpperCase()}...`;
+        }
+
+        draft.sessions.push(newSession);
+        draft.activeSessionId = newId;
+      }),
+
+    removeSession: (id) =>
+      set((draft) => {
+        if (draft.sessions.length === 1) return; // prevent closing the last tab
+
+        const index = draft.sessions.findIndex((s) => s.id === id);
+        if (index !== -1) {
+          draft.sessions.splice(index, 1);
+        }
+
+        // If we close the active tab, fallback to the last available tab
+        if (draft.activeSessionId === id) {
+          draft.activeSessionId = draft.sessions[draft.sessions.length - 1].id;
+        }
+      }),
+
+    switchSession: (id) =>
+      set((draft) => {
+        draft.activeSessionId = id;
+      }),
+
+    updateSessionTitle: (id, title) =>
+      set((draft) => {
+        const session = draft.sessions.find((s) => s.id === id);
+        if (session) session.title = title;
+      }),
+
+    // --- Workspace Actions ---
+    setCode: (newCode) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) session.history[session.currentStep].code = newCode;
+      }),
+
+    setActiveTask: (newTask) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) {
+          session.history[session.currentStep].activeTask = newTask;
+
+          if (
+            newTask !== "Pending Onboarding..." &&
+            newTask !== "Waiting for topic selection..."
+          ) {
+            // logic to prevent ui overflow
+            session.title =
+              newTask.length > 20 ? newTask.substring(0, 18) + "..." : newTask;
+          }
+        }
+      }),
+
+    setLanguage: (newLang) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) session.history[session.currentStep].language = newLang;
+      }),
+
+    setPersona: (persona) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) session.persona = persona;
+      }),
+
+    // --- History Navigation ---
+    navigateHistory: (direction) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+
+        if (session) {
+          const nextStep = session.currentStep + direction;
+          if (nextStep >= 0 && nextStep < session.history.length) {
+            session.currentStep = nextStep;
+          }
+        }
+      }),
+
+    advanceToNextLevel: (newTask, newCode, newLanguage) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) {
+          const isOnboarding =
+            session.history.length === 1 &&
+            (session.history[0].activeTask === "Pending Onboarding..." ||
+              session.history[0].activeTask ===
+                "Waiting for topic selection...");
+
+          const newTitle =
+            newTask.length > 15 ? newTask.substring(0, 15) + "..." : newTask;
+
+          const newStep: HistoryStep = {
+            activeTask: newTask,
+            code: newCode,
+            language: newLanguage,
+          };
+
+          if (isOnboarding) {
+            session.history = [newStep];
+            session.currentStep = 0;
+          } else {
+            session.history.push(newStep);
+            session.currentStep += 1;
+          }
+          session.title = newTitle;
+        }
+      }),
+
+    // --- Chat Actions ---
+    addMessage: (msg) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) session.messages.push(msg);
+      }),
+
+    updateMessage: (msgId, updates) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) {
+          const msg = session.messages.find((m) => m.id === msgId);
+          if (msg) Object.assign(msg, updates);
+        }
+      }),
+
+    setMessages: (msgsOrFn) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) {
+          session.messages =
+            typeof msgsOrFn === "function"
+              ? msgsOrFn(session.messages)
+              : msgsOrFn;
+        }
+      }),
+
+    // --- Terminal Actions ---
+    addLog: (type, message) =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) {
+          session.logs.push({
+            id: Date.now().toString() + Math.random().toString(),
+            type,
+            message,
+            timestamp: Date.now(),
+          });
+        }
+      }),
+
+    clearLogs: () =>
+      set((draft) => {
+        const session = draft.sessions.find(
+          (s) => s.id === draft.activeSessionId,
+        );
+        if (session) session.logs = [];
+      }),
+  })),
+);
