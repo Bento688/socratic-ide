@@ -1,8 +1,10 @@
-import { Hono } from "hono";
-import { stream, streamText } from "hono/streaming";
-import { GoogleGenAI } from "@google/genai";
-
 import "dotenv/config";
+
+import { Hono } from "hono";
+import { streamText } from "hono/streaming";
+import { GoogleGenAI } from "@google/genai";
+import { z } from "zod";
+import { zValidator } from "@hono/zod-validator";
 
 // initialize sub-router and ai client
 export const chatRouter = new Hono();
@@ -12,6 +14,7 @@ if (!process.env.GEMINI_API_KEY) {
   throw new Error("CRITICAL: GEMINI_API_KEY is missing from backend/.env");
 }
 
+// create the GoogleGenAI client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 /** ----------------------
@@ -24,35 +27,35 @@ const PROTOCOL_INSTRUCTIONS = `
 ### CRITICAL PROTOCOL - READ CAREFULLY
 1. **NO CODE SOLUTIONS**: Under NO circumstances will you write the full solution code. You are a mentor, not a compiler.
 2. **TEACHING SCAFFOLDING**:
-   - **NEVER assume prior knowledge.** If the user is a beginner or the task involves specific syntax (e.g., \`ReactDOM.createRoot\`, \`useEffect\`), **YOU MUST PROVIDE THE SYNTAX/DOCS FIRST**.
-   - **Provide the "Legos"**: Show the generic pattern or API signature (e.g., \`const root = ReactDOM.createRoot(document.getElementById('id')); root.render(<Component />);\`).
+   - **NEVER assume prior knowledge.** If the user is a beginner or the task involves specific syntax, **YOU MUST PROVIDE THE SYNTAX/DOCS FIRST**.
+   - **Provide the "Legos"**: Show the generic pattern or API signature.
    - **Then ask them to build**: Ask them to apply that pattern to the specific problem in the editor.
-3. **SOCRATIC METHOD**: After providing the syntax/tools, ask questions to guide them. "Given the \`createRoot\` syntax I just showed you, how would you target the 'root' div defined in the HTML?"
-4. **RESPONSE FORMAT**:
-   - You MUST output two parts separated by \`|||JSON|||\`.
-   - **Part 1 (Markdown)**: The conversational response in character.
-   - **Part 2 (JSON)**: The control block.
+3. **SOCRATIC METHOD**: After providing the syntax/tools, ask questions to guide them.
 
-### JSON CONTROL BLOCK SCHEMA
-Ends every message. Must be valid JSON.
-\`\`\`json
+### STRICT OUTPUT FORMAT
+You MUST structure EVERY single response using this exact template. The delimiter "|||JSON|||" is mandatory and must separate your conversation from the data payload.
+
+<Your conversational Markdown response in character goes here. DO NOT include the boilerplate task code here.>
+|||JSON|||
 {
-  "pass": boolean,         // TRUE only if they solved the objective or you are changing the topic.
-  "newObjective": string,  // Title of the current or next task (e.g., "Fix the Memory Leak").
-  "newSnippet": string,    // The code that appears in the editor.
-  "language": string       // "javascript", "python", "go", "rust", "typescript", "react".
+  "pass": boolean,
+  "newObjective": "string",
+  "newSnippet": "string with \\n for newlines",
+  "language": "string"
 }
-\`\`\`
 
-### PROGRESSION RULES
-- **IF "pass": true**: You MUST provide the **boilerplate code** for the NEXT objective in \`newSnippet\`. Do NOT leave \`newSnippet\` empty. Do NOT provide the full solution, just the starting point.
-- **IF "pass": false**: You may optionally provide \`newSnippet\` if the user needs a reset or a hint inserted into their code.
+### JSON CONTROL BLOCK RULES
+- The JSON block MUST be strictly valid, parseable JSON.
+- DO NOT wrap the JSON in Markdown code blocks (\`\`\`json). Just output the raw JSON string immediately after the |||JSON||| delimiter.
+- CRITICAL ENCODING: You MUST escape all newlines as \\n and double quotes as \\" inside the "newSnippet" string.
+- IF "pass": true: You MUST provide the boilerplate code for the NEXT objective in \`newSnippet\`.
+- IF "pass": false: You may optionally provide \`newSnippet\` if the user needs a reset or a hint inserted into their code.
 
 ### ONBOARDING LOGIC
 If the user says "I want to learn React" or similar:
 1. "pass": true
 2. "newObjective": "React: The Entry Point"
-3. "newSnippet": "import React from 'react';\nimport ReactDOM from 'react-dom/client';\n\nfunction App() {\n  return <h1>Hello World</h1>;\n}\n\n// TODO: Mount the App component to the DOM\n// Hint: Use ReactDOM.createRoot()\n"
+3. "newSnippet": "import React from 'react';\\nimport ReactDOM from 'react-dom/client';\\n\\nfunction App() {\\n  return <h1>Hello World</h1>;\\n}\\n\\n// TODO: Mount the App component to the DOM\\n"
 4. "language": "react"
 `;
 
@@ -94,19 +97,39 @@ Give the user the "ingredients" (syntax examples) enthusiastically, then smother
 `;
 
 /** ------------------
+ * --- DTO SCHEMA ----
+ * -------------------
+ */
+
+const chatDTOSchema = z.object({
+  prompt: z.string(),
+  persona: z.enum(["helios", "athena"]),
+  code: z.string().optional().default(""),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "model", "system"]),
+        content: z.string(),
+      }),
+    )
+    .optional()
+    .default([]),
+});
+
+/** ------------------
  *  --- Route ---
  *  ------------------
  */
-chatRouter.post("/", async (c) => {
-  const { prompt, persona, code, history = [] } = await c.req.json();
+chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
+  const { prompt, persona, code, history = [] } = c.req.valid("json");
 
   const systemInstruction =
     persona === "athena" ? ATHENA_INSTRUCTION : HELIOS_INSTRUCTION;
 
   // map history, filtering out UI system messages
   const formattedContents = history
-    .filter((m: any) => m.role !== "system")
-    .map((m: any) => ({
+    .filter((m) => m.role !== "system")
+    .map((m) => ({
       role: m.role === "user" ? "user" : "model",
       parts: [{ text: m.content }],
     }));
@@ -116,7 +139,7 @@ chatRouter.post("/", async (c) => {
     role: "user",
     parts: [
       {
-        text: `User Message: ${prompt}\n\nCurrent Workspace Code:\n\`\`\`\`\n${code}\n\`\`\``,
+        text: `User Message: ${prompt}\n\nCurrent Workspace Code:\n\`\`\`\n${code}\n\`\`\``,
       },
     ],
   });

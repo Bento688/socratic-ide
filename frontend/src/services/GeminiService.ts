@@ -1,11 +1,5 @@
 import { Persona, Message } from "../types";
 
-export const initializeChat = (
-  persona: Persona,
-  previousHistory: Message[] = [],
-) => {};
-export const resetChat = () => {};
-
 export const sendMessageStream = async function* (
   message: string,
   currentPersona: Persona,

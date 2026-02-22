@@ -15,11 +15,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "../ui/Button";
-import {
-  sendMessageStream,
-  initializeChat,
-  resetChat,
-} from "../../services/GeminiService";
+import { sendMessageStream } from "../../services/GeminiService";
 import { Message, ChatStatus, Persona } from "../../types";
 import { useSessionStore } from "@/src/stores/useSessionStore";
 import { useUIStore } from "@/src/stores/useUIStore";
@@ -76,18 +72,6 @@ const ChatInterface: React.FC = () => {
     scrollToBottom();
   }, [messages, status, persona]);
 
-  // Sync Gemini Service when tab switches or persona changes
-  useEffect(() => {
-    if (persona) {
-      // Re-initialize using the history of the CURRENT active session.
-      // We explicitly exclude 'messages' from the dependency array because
-      // we only want to re-init session context when the SESSION ID or PERSONA changes,
-      // not when a new message is appended (that is handled by the Chat object state or context).
-      initializeChat(persona, messages);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, persona]);
-
   // Handle Request to Change Persona
   const initiatePersonaSwitch = (newPersona: Persona) => {
     // If no active session (onboarding), switch immediately
@@ -133,8 +117,6 @@ const ChatInterface: React.FC = () => {
       },
     ];
 
-    initializeChat(newPersona, currentMsgs);
-
     // 4. Trigger Handover Response
     const modelMessageId = `handover-${Date.now()}`;
     addMessage({
@@ -153,7 +135,12 @@ const ChatInterface: React.FC = () => {
     let fullResponse = "";
 
     try {
-      const stream = sendMessageStream(handoverPrompt, newPersona);
+      const stream = sendMessageStream(
+        handoverPrompt,
+        newPersona,
+        code,
+        currentMsgs,
+      );
 
       for await (const chunk of stream) {
         fullResponse += chunk;
@@ -177,8 +164,6 @@ const ChatInterface: React.FC = () => {
   // Initial Selection (Onboarding)
   const handleSelectPersona = (p: Persona) => {
     setPersona(p);
-    resetChat();
-    initializeChat(p);
 
     const greeting =
       p === "helios"
@@ -229,7 +214,14 @@ const ChatInterface: React.FC = () => {
     let fullResponse = "";
 
     try {
-      const stream = sendMessageStream(promptToSend, persona);
+      const currentMsgs = [...messages, userMessage];
+
+      const stream = sendMessageStream(
+        promptToSend,
+        persona,
+        code,
+        currentMsgs,
+      );
 
       for await (const chunk of stream) {
         fullResponse += chunk;
@@ -247,6 +239,11 @@ const ChatInterface: React.FC = () => {
 
           if (jsonStart !== -1 && jsonEnd !== -1) {
             const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
+
+            // --- INJECT OBSERVABILITY HERE ---
+            console.log("RAW JSON STRING FROM LLM:", jsonStr);
+            // ---------------------------------
+
             const metadata = JSON.parse(jsonStr);
 
             const nextObjective = metadata.newObjective || "Next Task";
