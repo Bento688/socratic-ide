@@ -10,12 +10,34 @@ import {
 } from "../types";
 import { api } from "@/src/lib/axios";
 
-// interface for what the backend returns
+/**
+ * --- INTERFACES FOR WHAT THE BACKEND RETURNS ---
+ */
 interface DBWorkspace {
   id: string;
   persona: Persona;
   userId: string;
   updatedAt: string;
+  workspaceLevels?: { taskTitle: string }[];
+}
+
+// the exact shape of a message row from MySQL
+interface DBMessage {
+  id: string;
+  role: "user" | "model" | "system";
+  content: string;
+  createdAt: string;
+  workspaceId: string;
+}
+
+// the exact shape of a level row from MySQL
+interface DBWorkspaceLevel {
+  id: string;
+  stepNumber: number;
+  taskTitle: string;
+  codeSnapshot: string;
+  language: string;
+  workspaceId: string;
 }
 
 /**
@@ -50,6 +72,7 @@ const createInitialSession = (
  * Session State Interface
  */
 interface SessionState {
+  hasInitialized: boolean;
   // --- State ---
   sessions: Session[];
   activeSessionId: string;
@@ -60,11 +83,13 @@ interface SessionState {
   switchSession: (id: string) => void;
   updateSessionTitle: (id: string, title: string) => void;
 
-  // --- Bootstrapping ---
+  // --- Bootstrapping & Data Fetching ---
   loadSessions: () => Promise<void>;
+  fetchWorkspacePayload: (id: string) => Promise<void>;
 
   // --- Workspace Actions (Operating on the Active Session) ---
   setCode: (newCode: string) => void;
+  syncCurrentCodeToDB: () => void;
   setActiveTask: (newTask: string) => void;
   setLanguage: (newLang: string) => void;
   setPersona: (newPersona: Persona) => void;
@@ -93,51 +118,161 @@ interface SessionState {
 export const useSessionStore = create<SessionState>()(
   immer((set, get) => ({
     // Initial State
+    hasInitialized: false,
     sessions: [createInitialSession("default-session")],
     activeSessionId: "default-session",
 
-    // --- Bootstrapping ---
+    // --- Bootstrapping & fetching data ---
     loadSessions: async () => {
+      // if the app has finished initializing, return true immediately (to prevent strict mode from firing twice)
+      if (get().hasInitialized) return;
+
+      // lock the state so that the second mount is ignored
+      set((draft) => {
+        draft.hasInitialized = true;
+      });
+
       try {
         const response = await api.get("/workspaces");
         const dbWorkspaces = response.data.workspaces;
 
         // scenario A: db is completely empty (first time user)
         if (dbWorkspaces.length === 0) {
-          get().addSession(); // Automatically create their first tab
+          // 1. provision a real bucket in MySQL immediately
+          const newWsResponse = await api.post("/workspaces", {
+            persona: "helios",
+          });
+          const realDbId = newWsResponse.data.workspace.id;
+
+          // 2. overwrite the frontend ghost session with the real ID
+          set((draft) => {
+            // pass 'null' for the persona so that the UI detects that the user
+            // hasn't made a choice yet
+            const initialSession = createInitialSession(
+              realDbId,
+              null,
+              "New Tab",
+            );
+
+            draft.sessions = [initialSession];
+            draft.activeSessionId = realDbId;
+          });
+
           return;
         }
 
         // scenario B: the user has existing workspaces
         set((draft) => {
           // map db rows into zustand session objects
-          draft.sessions = dbWorkspaces.map((ws: DBWorkspace) => ({
-            id: ws.id,
-            title: "Restored Tab",
-            persona: ws.persona, // preserved from MySQL
-            history: [
-              {
-                code: `// Restored ${ws.persona} workspace...\n// The backend bucket exists, but the code-saving pipeline isn't built yet!`,
-                activeTask: "Restored Session", // This explicitly bypasses the Onboarding UI!
-                language: "javascript",
-              },
-            ],
-            currentStep: 0,
-            messages: [
-              {
-                id: `sys-restore-${ws.id}`,
-                role: "model",
-                content: `### Connection Established\nI successfully loaded this **${ws.persona}** workspace from the MySQL database.\n\nHowever, we haven't built the pipeline to save individual messages yet, so I have no memory of what we talked about.\n\n> Should we build the \`POST /api/messages\` route next?`,
-              },
-            ],
-            logs: [],
-          }));
+          draft.sessions = dbWorkspaces.map((ws: DBWorkspace) => {
+            // check of the workspace has started any levels
+            const hasStarted =
+              ws.workspaceLevels && ws.workspaceLevels.length > 0;
+
+            // extract the title safely, defaulting to "New Tab" if no levels exist yet
+            let tabTitle = "New Tab";
+            if (hasStarted) {
+              const rawTitle = ws.workspaceLevels![0].taskTitle;
+              tabTitle =
+                rawTitle.length > 15
+                  ? rawTitle.substring(0, 15) + "..."
+                  : rawTitle;
+            }
+
+            return {
+              id: ws.id,
+              title: tabTitle,
+              persona: hasStarted ? ws.persona : null, // preserved from MySQL
+              history: [
+                {
+                  code: hasStarted
+                    ? `// Establishing secure connection...\n// Restoring ${ws.persona} workspace state...\n`
+                    : "// Select a mentor to begin...",
+                  activeTask: hasStarted
+                    ? "Loading Workspace..."
+                    : "Pending Onboarding...", // Still safely bypasses onboarding!
+                  language: "javascript",
+                },
+              ],
+              currentStep: 0,
+              messages: hasStarted
+                ? [
+                    {
+                      id: `sys-restore-${ws.id}`,
+                      role: "system", // System role renders cleaner for loading states
+                      content: `*Synchronizing chat history from server...*`,
+                    },
+                  ]
+                : [],
+              logs: [],
+            };
+          });
 
           // set the most recently updated workspace as the active tab
           draft.activeSessionId = dbWorkspaces[0].id;
         });
+
+        await get().fetchWorkspacePayload(dbWorkspaces[0].id);
       } catch (error) {
         console.error("Failed to load workspaces from database:", error);
+      }
+    },
+
+    fetchWorkspacePayload: async (id) => {
+      try {
+        const response = await api.get(`/workspaces/${id}`);
+        const { messages, workspaceLevels } = response.data.workspace; // extract the payload
+
+        set((draft) => {
+          const session = draft.sessions.find((s) => s.id === id);
+          if (session) {
+            // 1. map the messages directly into local memory
+            session.messages = messages.map((m: DBMessage) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+            }));
+
+            // fallback: if db returned 0 messages, show a system note
+            // instead of a totally blank screen.
+            if (session.messages.length === 0 && session.persona !== null) {
+              session.messages = [
+                {
+                  id: `sys-empty-${id}`,
+                  role: "system",
+                  content: `*No chat history found for this workspace.*`,
+                },
+              ];
+            }
+
+            // 2. map code levels (NEW CODE)
+            if (workspaceLevels && workspaceLevels.length > 0) {
+              session.history = workspaceLevels.map(
+                (lvl: DBWorkspaceLevel) => ({
+                  code: lvl.codeSnapshot,
+                  activeTask: lvl.taskTitle,
+                  language: lvl.language,
+                }),
+              );
+
+              // automatically jump to the latest level
+              session.currentStep = session.history.length - 1;
+
+              // update the tab title to match the latest task
+              const latestTask =
+                session.history[session.currentStep].activeTask;
+              session.title =
+                latestTask.length > 15
+                  ? latestTask.substring(0, 15) + "..."
+                  : latestTask;
+            }
+          }
+        });
+      } catch (error) {
+        console.error(
+          `Failed to fetch heavy payload for workspace ${id}:`,
+          error,
+        );
       }
     },
 
@@ -215,10 +350,15 @@ export const useSessionStore = create<SessionState>()(
       });
     },
 
-    switchSession: (id) =>
+    switchSession: async (id) => {
+      // instantly switch the tab in the UI
       set((draft) => {
         draft.activeSessionId = id;
-      }),
+      });
+
+      // silently fetch the heavy payload in the background
+      await get().fetchWorkspacePayload(id);
+    },
 
     updateSessionTitle: (id, title) =>
       set((draft) => {
@@ -234,6 +374,34 @@ export const useSessionStore = create<SessionState>()(
         );
         if (session) session.history[session.currentStep].code = newCode;
       }),
+
+    syncCurrentCodeToDB: () => {
+      const state = get();
+      const session = state.sessions.find(
+        (s) => s.id === state.activeSessionId,
+      );
+      if (!session) return;
+
+      const currentStep = session.history[session.currentStep];
+
+      // security check: don't try to save the dummy onboarding placeholders
+      if (
+        currentStep.activeTask === "Pending Onboarding..." ||
+        currentStep.activeTask === "Waiting for topic selection..." ||
+        currentStep.activeTask === "Restored Session"
+      ) {
+        return;
+      }
+
+      // update the codeSnapshot to DB
+      api
+        .patch("/levels", {
+          workspaceId: session.id,
+          stepNumber: session.currentStep,
+          codeSnapshot: currentStep.code,
+        })
+        .catch((err) => console.error("Failed to sync code snapshot:", err));
+    },
 
     setActiveTask: (newTask) =>
       set((draft) => {
@@ -262,13 +430,28 @@ export const useSessionStore = create<SessionState>()(
         if (session) session.history[session.currentStep].language = newLang;
       }),
 
-    setPersona: (persona) =>
+    setPersona: (persona) => {
+      // 1. read outside mutation block to get the active ID
+      const state = get();
+
+      const activeId = state.activeSessionId;
+
+      // 2. background network call
+      if (persona) {
+        api
+          .patch(`/workspaces/${activeId}`, { persona })
+          .catch((err) =>
+            console.error("Failed to update persona in DB:", err),
+          );
+      }
+
       set((draft) => {
         const session = draft.sessions.find(
           (s) => s.id === draft.activeSessionId,
         );
         if (session) session.persona = persona;
-      }),
+      });
+    },
 
     // --- History Navigation ---
     navigateHistory: (direction) =>
@@ -285,18 +468,40 @@ export const useSessionStore = create<SessionState>()(
         }
       }),
 
-    advanceToNextLevel: (newTask, newCode, newLanguage) =>
+    advanceToNextLevel: (newTask, newCode, newLanguage) => {
+      // 1. Read outside the mutation block
+      const state = get();
+      const session = state.sessions.find(
+        (s) => s.id === state.activeSessionId,
+      );
+      if (!session) return;
+
+      const isOnboarding =
+        session.history.length === 1 &&
+        (session.history[0].activeTask === "Pending Onboarding..." ||
+          session.history[0].activeTask === "Waiting for topic selection..." ||
+          session.history[0].activeTask === "Restored Session");
+
+      // calculate what step number this is going to be
+      const nextStepNum = isOnboarding ? 0 : session.currentStep + 1;
+
+      // 2. Background Network Call
+      api
+        .post("/levels", {
+          workspaceId: session.id,
+          stepNumber: nextStepNum,
+          taskTitle: newTask,
+          codeSnapshot: newCode,
+          language: newLanguage,
+        })
+        .catch((err) => console.error("Failed to save level to DB:", err));
+
+      // The instant UI update
       set((draft) => {
-        const session = draft.sessions.find(
+        const draftSession = draft.sessions.find(
           (s) => s.id === draft.activeSessionId,
         );
-        if (session) {
-          const isOnboarding =
-            session.history.length === 1 &&
-            (session.history[0].activeTask === "Pending Onboarding..." ||
-              session.history[0].activeTask ===
-                "Waiting for topic selection...");
-
+        if (draftSession) {
           const newTitle =
             newTask.length > 15 ? newTask.substring(0, 15) + "..." : newTask;
 
@@ -307,15 +512,16 @@ export const useSessionStore = create<SessionState>()(
           };
 
           if (isOnboarding) {
-            session.history = [newStep];
-            session.currentStep = 0;
+            draftSession.history = [newStep];
+            draftSession.currentStep = 0;
           } else {
-            session.history.push(newStep);
-            session.currentStep += 1;
+            draftSession.history.push(newStep);
+            draftSession.currentStep += 1;
           }
-          session.title = newTitle;
+          draftSession.title = newTitle;
         }
-      }),
+      });
+    },
 
     // --- Chat Actions ---
     addMessage: (msg) =>

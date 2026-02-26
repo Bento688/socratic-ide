@@ -5,6 +5,9 @@ import { streamText } from "hono/streaming";
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
+import { db } from "../db/connection.js";
+import { messages } from "../db/schema.js";
+import { randomUUID } from "crypto";
 
 // initialize sub-router and ai client
 export const chatRouter = new Hono();
@@ -102,6 +105,7 @@ Give the user the "ingredients" (syntax examples) enthusiastically, then smother
  */
 
 const chatDTOSchema = z.object({
+  workspaceId: z.string(),
   prompt: z.string(),
   persona: z.enum(["helios", "athena"]),
   code: z.string().optional().default(""),
@@ -114,6 +118,12 @@ const chatDTOSchema = z.object({
     )
     .optional()
     .default([]),
+  isReview: z.boolean().optional().default(false),
+});
+
+const systemMsgSchema = z.object({
+  workspaceId: z.string(),
+  content: z.string(),
 });
 
 /** ------------------
@@ -121,7 +131,30 @@ const chatDTOSchema = z.object({
  *  ------------------
  */
 chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
-  const { prompt, persona, code, history = [] } = c.req.valid("json");
+  // 1. Get the contents of the request
+  const {
+    workspaceId,
+    prompt,
+    persona,
+    code,
+    history = [],
+    isReview,
+  } = c.req.valid("json");
+
+  const displayContent = isReview ? "Review my code." : prompt;
+  let llmPrompt = prompt;
+
+  if (isReview) {
+    llmPrompt = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${code}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
+  }
+
+  // 2. Immediately log the user's message to the database
+  await db.insert(messages).values({
+    id: `msg_${randomUUID()}`,
+    workspaceId: workspaceId,
+    role: "user",
+    content: displayContent,
+  });
 
   const systemInstruction =
     persona === "athena" ? ATHENA_INSTRUCTION : HELIOS_INSTRUCTION;
@@ -139,12 +172,15 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
     role: "user",
     parts: [
       {
-        text: `User Message: ${prompt}\n\nCurrent Workspace Code:\n\`\`\`\n${code}\n\`\`\``,
+        text: `User Message: ${llmPrompt}\n\nCurrent Workspace Code:\n\`\`\`\n${code}\n\`\`\``,
       },
     ],
   });
 
   return streamText(c, async (stream) => {
+    // accumulator variable
+    let aiFullResponse = "";
+
     try {
       const responseStream = await ai.models.generateContentStream({
         model: "gemini-2.5-flash",
@@ -159,12 +195,37 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
 
       for await (const chunk of responseStream) {
         if (chunk.text) {
+          aiFullResponse += chunk.text;
           await stream.write(chunk.text);
         }
       }
+
+      // scrub the JSON block before saving to MySQL
+      const cleanModelResponse = aiFullResponse.split("|||JSON|||")[0].trim();
+
+      // once stream is finished, save the ai response to MySQL
+      await db.insert(messages).values({
+        id: `msg_${randomUUID()}`,
+        workspaceId: workspaceId,
+        role: "model",
+        content: cleanModelResponse,
+      });
     } catch (error) {
       console.error("Gemini API Error: ", error);
       await stream.write("\n\n*[Connection Terminated]*");
     }
   });
+});
+
+chatRouter.post("/system", zValidator("json", systemMsgSchema), async (c) => {
+  const { workspaceId, content } = c.req.valid("json");
+
+  await db.insert(messages).values({
+    id: `msg_${randomUUID()}`,
+    workspaceId,
+    role: "system",
+    content,
+  });
+
+  return c.json({ success: true }, 201);
 });

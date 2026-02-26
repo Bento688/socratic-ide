@@ -1,3 +1,4 @@
+import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
@@ -59,3 +60,54 @@ export const messages = mysqlTable("messages", {
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+/**
+ * --- RELATIONS (TypeScript Graph) ---
+ */
+
+// --- USER DOMAIN ---
+
+// 1. A user can have MANY authSessions AND workspaces
+export const usersRelations = relations(users, ({ many }) => ({
+  authSessions: many(authSessions),
+  workspaces: many(workspaces),
+}));
+
+// 2. A authSession belongs to ONE user
+export const authSessionsRelations = relations(authSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [authSessions.userId],
+    references: [users.id],
+  }),
+}));
+
+// --- WORKSPACE DOMAIN ---
+
+// 1. A workspace CAN HAVE MANY messages AND workspaceLevels, and BELONGS TO ONE user
+export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
+  messages: many(messages),
+  workspaceLevels: many(workspaceLevels),
+  user: one(users, {
+    fields: [workspaces.userId],
+    references: [users.id],
+  }),
+}));
+
+// 2. A workspaceLevel belongs to ONE workspace
+export const workspaceLevelsRelations = relations(
+  workspaceLevels,
+  ({ one }) => ({
+    workspace: one(workspaces, {
+      fields: [workspaceLevels.workspaceId],
+      references: [workspaces.id],
+    }),
+  }),
+);
+
+// 3. A messages belongs to ONE workspace
+export const messagesRelations = relations(messages, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [messages.workspaceId],
+    references: [workspaces.id],
+  }),
+}));

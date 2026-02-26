@@ -8,6 +8,7 @@ import { logger } from "hono/logger";
 // import domain routers
 import { chatRouter } from "./routes/chat.js";
 import { workspacesRouter } from "./routes/workspaces.js";
+import { levelsRouter } from "./routes/levels.js";
 
 const app = new Hono().basePath("/api");
 
@@ -27,6 +28,7 @@ app.get("/health", (c) => c.json({ status: "online" }));
 // routes
 app.route("/chat", chatRouter);
 app.route("/workspaces", workspacesRouter);
+app.route("/levels", levelsRouter);
 
 const port = Number(process.env.PORT) || 8080;
 

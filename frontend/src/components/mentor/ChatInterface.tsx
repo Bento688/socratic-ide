@@ -19,13 +19,18 @@ import { sendMessageStream } from "../../services/GeminiService";
 import { Message, ChatStatus, Persona } from "../../types";
 import { useSessionStore } from "@/src/stores/useSessionStore";
 import { useUIStore } from "@/src/stores/useUIStore";
+import { api } from "@/src/lib/axios";
 
 const ChatInterface: React.FC = () => {
   // wire up ui store
   const showToast = useUIStore((state) => state.showToast);
 
   // wire up session store actions
+  const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const setCode = useSessionStore((state) => state.setCode);
+  const syncCurrentCodeToDB = useSessionStore(
+    (state) => state.syncCurrentCodeToDB,
+  );
   const setActiveTask = useSessionStore((state) => state.setActiveTask);
   const setLanguage = useSessionStore((state) => state.setLanguage);
   const setPersona = useSessionStore((state) => state.setPersona);
@@ -137,6 +142,7 @@ const ChatInterface: React.FC = () => {
       const stream = sendMessageStream(
         handoverPrompt,
         newPersona,
+        activeSessionId,
         code,
         currentMsgs,
       );
@@ -186,6 +192,9 @@ const ChatInterface: React.FC = () => {
     if ((!text.trim() && !isReview) || status === ChatStatus.STREAMING) return;
     if (!persona) return;
 
+    // sync user's current draft to MySQL
+    syncCurrentCodeToDB();
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -195,12 +204,6 @@ const ChatInterface: React.FC = () => {
     addMessage(userMessage);
     setInput("");
     setStatus(ChatStatus.STREAMING);
-
-    let promptToSend = text;
-    if (isReview) {
-      const safeCode = code.replace(/`/g, "\\`");
-      promptToSend = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${safeCode}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
-    }
 
     const modelMessageId = (Date.now() + 1).toString();
     addMessage({
@@ -216,10 +219,12 @@ const ChatInterface: React.FC = () => {
       const currentMsgs = [...messages, userMessage];
 
       const stream = sendMessageStream(
-        promptToSend,
+        text,
         persona,
+        activeSessionId,
         code,
         currentMsgs,
+        isReview,
       );
 
       for await (const chunk of stream) {
@@ -267,20 +272,31 @@ const ChatInterface: React.FC = () => {
               const systemMsg: Message = {
                 id: `sys-${Date.now()}`,
                 role: "system",
-                content: nextObjective,
+                content: `🎯 Current Task: ${nextObjective}`,
               };
 
+              // 1. Update Local UI
               setMessages((prev) => {
                 const targetIndex = prev.findIndex(
                   (m) => m.id === modelMessageId,
                 );
                 if (targetIndex !== -1) {
                   const newArr = [...prev];
-                  newArr.splice(targetIndex, 0, systemMsg);
+                  newArr.splice(targetIndex + 1, 0, systemMsg);
                   return newArr;
                 }
                 return [...prev, systemMsg];
               });
+
+              // 2. save the divider to the DB permanently
+              api
+                .post("/chat/system", {
+                  workspaceId: activeSessionId,
+                  content: nextObjective,
+                })
+                .catch((err) =>
+                  console.error("Failed to save system message:", err),
+                );
 
               setTimeout(() => {
                 advanceToNextLevel(nextObjective, nextCode, nextLang);
@@ -292,8 +308,14 @@ const ChatInterface: React.FC = () => {
               if (metadata.newObjective) setActiveTask(metadata.newObjective);
               if (metadata.language) setLanguage(metadata.language);
               // Only update code if explicitly provided and we aren't passing a level (passing handles update via advanceToNextLevel)
-              if (metadata.newSnippet && metadata.pass !== true)
+              if (metadata.newSnippet && metadata.pass !== true) {
                 setCode(metadata.newSnippet);
+
+                // silently sync the AI's hint to MySQL
+                setTimeout(() => {
+                  syncCurrentCodeToDB();
+                }, 100);
+              }
             }
           }
         } catch (e) {

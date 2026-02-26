@@ -3,8 +3,10 @@ import { Persona, Message } from "../types";
 export const sendMessageStream = async function* (
   message: string,
   currentPersona: Persona,
+  workspaceId: string,
   code: string = "",
   history: Message[] = [],
+  isReview: boolean = false,
 ) {
   try {
     const response = await fetch("http://localhost:3000/api/chat", {
@@ -13,10 +15,12 @@ export const sendMessageStream = async function* (
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        workspaceId: workspaceId,
         prompt: message,
         persona: currentPersona,
         code: code,
         history: history,
+        isReview,
       }),
     });
 
