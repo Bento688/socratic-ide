@@ -7,7 +7,7 @@ import * as schema from "./schema.js";
 const connectionPool = mysql.createPool(process.env.DATABASE_URL!);
 
 // initialize Drizzle (explicitly passing in the schema to be able to use the Relational API)
-const db = drizzle({
+export const db = drizzle({
   client: connectionPool,
   schema,
   mode: "default",

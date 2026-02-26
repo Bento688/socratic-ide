@@ -8,8 +8,24 @@ import {
   LogType,
   LogEntry,
 } from "../types";
+import { api } from "@/src/lib/axios";
 
-// helper to create a fresh session
+// interface for what the backend returns
+interface DBWorkspace {
+  id: string;
+  persona: Persona;
+  userId: string;
+  updatedAt: string;
+}
+
+/**
+ * * HELPER TO CREATE INITIAL SESSION
+ *
+ * @param id
+ * @param persona
+ * @param title
+ * @returns
+ */
 const createInitialSession = (
   id: string,
   persona: Persona = null,
@@ -30,6 +46,9 @@ const createInitialSession = (
   logs: [],
 });
 
+/**
+ * Session State Interface
+ */
 interface SessionState {
   // --- State ---
   sessions: Session[];
@@ -40,6 +59,9 @@ interface SessionState {
   removeSession: (id: string) => void;
   switchSession: (id: string) => void;
   updateSessionTitle: (id: string, title: string) => void;
+
+  // --- Bootstrapping ---
+  loadSessions: () => Promise<void>;
 
   // --- Workspace Actions (Operating on the Active Session) ---
   setCode: (newCode: string) => void;
@@ -65,48 +87,119 @@ interface SessionState {
   clearLogs: () => void;
 }
 
+/**
+ * Session State Store
+ */
 export const useSessionStore = create<SessionState>()(
-  immer((set) => ({
+  immer((set, get) => ({
     // Initial State
     sessions: [createInitialSession("default-session")],
     activeSessionId: "default-session",
 
-    // --- Tab Management ---
-    addSession: () =>
-      set((draft) => {
-        const newId = `session-${Date.now()}`;
+    // --- Bootstrapping ---
+    loadSessions: async () => {
+      try {
+        const response = await api.get("/workspaces");
+        const dbWorkspaces = response.data.workspaces;
 
-        // Find the current persona to inherit
-        const activeSession = draft.sessions.find(
-          (s) => s.id === draft.activeSessionId,
-        );
-        const currentPersona = activeSession?.persona || null;
-
-        const newSession = createInitialSession(
-          newId,
-          currentPersona,
-          "New Tab",
-        );
-
-        // Agent reaction logic
-        if (currentPersona) {
-          newSession.messages.push({
-            id: `reaction-${Date.now()}`,
-            role: "model",
-            content:
-              currentPersona === "helios"
-                ? "### Context Switch Detected\nWhy did you change the topic? Giving up already? I knew I couldn't trust you.\n\n> What is this distraction about?"
-                : "### New Canvas\nBabe! did I give you a hard time? A fresh start then 🙄.\n\n> What shall we create here?",
-          });
-          newSession.history[0].activeTask = "Waiting for topic selection...";
-          newSession.history[0].code = `// Fresh start with ${currentPersona.toUpperCase()}...`;
+        // scenario A: db is completely empty (first time user)
+        if (dbWorkspaces.length === 0) {
+          get().addSession(); // Automatically create their first tab
+          return;
         }
 
-        draft.sessions.push(newSession);
-        draft.activeSessionId = newId;
-      }),
+        // scenario B: the user has existing workspaces
+        set((draft) => {
+          // map db rows into zustand session objects
+          draft.sessions = dbWorkspaces.map((ws: DBWorkspace) => ({
+            id: ws.id,
+            title: "Restored Tab",
+            persona: ws.persona, // preserved from MySQL
+            history: [
+              {
+                code: `// Restored ${ws.persona} workspace...\n// The backend bucket exists, but the code-saving pipeline isn't built yet!`,
+                activeTask: "Restored Session", // This explicitly bypasses the Onboarding UI!
+                language: "javascript",
+              },
+            ],
+            currentStep: 0,
+            messages: [
+              {
+                id: `sys-restore-${ws.id}`,
+                role: "model",
+                content: `### Connection Established\nI successfully loaded this **${ws.persona}** workspace from the MySQL database.\n\nHowever, we haven't built the pipeline to save individual messages yet, so I have no memory of what we talked about.\n\n> Should we build the \`POST /api/messages\` route next?`,
+              },
+            ],
+            logs: [],
+          }));
 
-    removeSession: (id) =>
+          // set the most recently updated workspace as the active tab
+          draft.activeSessionId = dbWorkspaces[0].id;
+        });
+      } catch (error) {
+        console.error("Failed to load workspaces from database:", error);
+      }
+    },
+
+    // --- Tab Management ---
+    addSession: async () => {
+      try {
+        // 1. read the current state outside of the mutation block
+        const state = get();
+        const activeSession = state.sessions.find(
+          (s) => s.id === state.activeSessionId,
+        );
+
+        // db requires strict string, default to helios if null
+        const currentPersona = activeSession?.persona || "helios";
+
+        // 2. call the backend api
+        const response = await api.post("/workspaces", {
+          persona: currentPersona,
+        });
+
+        // 3. extract the id generated by the backend
+        const dbWorkspaceId = response.data.workspace.id;
+
+        // 4. synchronously update the local UI memory
+        set((draft) => {
+          const newSession = createInitialSession(
+            dbWorkspaceId,
+            currentPersona,
+            "New Tab",
+          );
+
+          // agent reaction logic
+          if (currentPersona) {
+            newSession.messages.push({
+              id: `reaction-${Date.now()}`,
+              role: "model",
+              content:
+                currentPersona === "helios"
+                  ? "### Context Switch Detected\nWhy did you change the topic? Giving up already? I knew I couldn't trust you.\n\n> What is this distraction about?"
+                  : "### New Canvas\nBabe! did I give you a hard time? A fresh start then 🙄.\n\n> What shall we create here?",
+            });
+            newSession.history[0].activeTask = "Waiting for topic selection...";
+            newSession.history[0].code = `// Fresh start with ${currentPersona.toUpperCase()}...`;
+          }
+
+          draft.sessions.push(newSession);
+          draft.activeSessionId = dbWorkspaceId;
+        });
+      } catch (error) {
+        console.error("Failed to provision workspace in database:", error);
+      }
+    },
+
+    removeSession: (id) => {
+      // 1. background network call (optimistic deletion)
+      // fire the api call but DO NOT "await" it, preventing UI freezing.
+      // if it fails, we log it.
+      api.delete(`/workspaces/${id}`).catch((err) => {
+        console.error(`Failed to delete workspace ${id} from database:`, err);
+      });
+
+      // 2. instant local UI update
       set((draft) => {
         if (draft.sessions.length === 1) return; // prevent closing the last tab
 
@@ -119,7 +212,8 @@ export const useSessionStore = create<SessionState>()(
         if (draft.activeSessionId === id) {
           draft.activeSessionId = draft.sessions[draft.sessions.length - 1].id;
         }
-      }),
+      });
+    },
 
     switchSession: (id) =>
       set((draft) => {

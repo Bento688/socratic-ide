@@ -25,7 +25,6 @@ const ChatInterface: React.FC = () => {
   const showToast = useUIStore((state) => state.showToast);
 
   // wire up session store actions
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const setCode = useSessionStore((state) => state.setCode);
   const setActiveTask = useSessionStore((state) => state.setActiveTask);
   const setLanguage = useSessionStore((state) => state.setLanguage);

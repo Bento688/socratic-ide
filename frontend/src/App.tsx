@@ -5,7 +5,7 @@ import ChatInterface from "./components/mentor/ChatInterface";
 import { Navbar } from "./components/ui/Navbar";
 import { ToastViewport } from "./components/ui/Toast";
 import { TabBar } from "./components/ui/TabBar";
-import { useSessionStore } from "@/src/stores/useSessionStore";
+import { useSessionStore } from "./stores/useSessionStore";
 
 // Banner Component
 const TaskBanner = () => {
@@ -81,6 +81,14 @@ const IdeLayout = () => {
 };
 
 const App: React.FC = () => {
+  // grab load function
+  const loadSessions = useSessionStore((state) => state.loadSessions);
+
+  // fire once on mount
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
   return <IdeLayout />;
 };
 
