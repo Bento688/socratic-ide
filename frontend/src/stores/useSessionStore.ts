@@ -8,7 +8,7 @@ import {
   LogType,
   LogEntry,
 } from "../types";
-import { api } from "@/src/lib/axios";
+import { api } from "../lib/axios";
 
 /**
  * --- INTERFACES FOR WHAT THE BACKEND RETURNS ---

@@ -8,6 +8,13 @@
       "when": 1771913039040,
       "tag": "0000_crazy_la_nuit",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1772170192086,
+      "tag": "0001_famous_calypso",
+      "breakpoints": true
     }
   ]
 }

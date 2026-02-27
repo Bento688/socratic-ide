@@ -6,25 +6,61 @@ import {
   datetime,
   int,
   text,
+  boolean,
 } from "drizzle-orm/mysql-core";
 
 /**
- * --- IDENTITY ---
+ * --- IDENTITY (Better Auth Architecture) ---
  */
 
-export const users = mysqlTable("users", {
+export const user = mysqlTable("users", {
   id: varchar("id", { length: 255 }).primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
   email: varchar("email", { length: 255 }).notNull().unique(),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  emailVerified: boolean("email_verified").notNull(),
+  image: text("image"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
 });
 
-export const authSessions = mysqlTable("auth_sessions", {
+export const session = mysqlTable("session", {
   id: varchar("id", { length: 255 }).primaryKey(),
+  expiresAt: datetime("expires_at").notNull(),
+  token: varchar("token", { length: 255 }).notNull().unique(),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
   userId: varchar("user_id", { length: 255 })
     .notNull()
-    .references(() => users.id, { onDelete: "cascade" }), // if user dies, session dies
-  expiresAt: datetime("expires_at").notNull(),
+    .references(() => user.id, { onDelete: "cascade" }),
+});
+
+export const account = mysqlTable("account", {
+  id: varchar("id", { length: 255 }).primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: varchar("user_id", { length: 255 })
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+  scope: text("scope"),
+  password: text("password"), // password hashes are stored here
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
+export const verification = mysqlTable("verification", {
+  id: varchar("id", { length: 255 }).primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at"),
+  updatedAt: timestamp("updated_at"),
 });
 
 /**
@@ -35,7 +71,7 @@ export const workspaces = mysqlTable("workspaces", {
   id: varchar("id", { length: 255 }).primaryKey(),
   userId: varchar("user_id", { length: 255 })
     .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
+    .references(() => user.id, { onDelete: "cascade" }),
   persona: varchar("persona", { length: 50 }).notNull(), // "helios" | "athena"
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
 });
@@ -68,16 +104,24 @@ export const messages = mysqlTable("messages", {
 // --- USER DOMAIN ---
 
 // 1. A user can have MANY authSessions AND workspaces
-export const usersRelations = relations(users, ({ many }) => ({
-  authSessions: many(authSessions),
+export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
   workspaces: many(workspaces),
 }));
 
 // 2. A authSession belongs to ONE user
-export const authSessionsRelations = relations(authSessions, ({ one }) => ({
-  user: one(users, {
-    fields: [authSessions.userId],
-    references: [users.id],
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
   }),
 }));
 
@@ -87,9 +131,9 @@ export const authSessionsRelations = relations(authSessions, ({ one }) => ({
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   messages: many(messages),
   workspaceLevels: many(workspaceLevels),
-  user: one(users, {
+  user: one(user, {
     fields: [workspaces.userId],
-    references: [users.id],
+    references: [user.id],
   }),
 }));
 

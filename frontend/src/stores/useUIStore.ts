@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { Toast, ToastType } from "@/src/types";
+import { Toast, ToastType } from "../types";
 
 interface UIState {
   // --- State ---

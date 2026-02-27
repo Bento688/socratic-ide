@@ -9,8 +9,8 @@ import {
 } from "lucide-react";
 import { Terminal } from "./Terminal";
 import { Button } from "../ui/Button";
-import { useSessionStore } from "@/src/stores/useSessionStore";
-import { useUIStore } from "@/src/stores/useUIStore";
+import { useSessionStore } from "../../stores/useSessionStore";
+import { useUIStore } from "../../stores/useUIStore";
 
 const CodeEditor: React.FC = () => {
   // wire up UI store

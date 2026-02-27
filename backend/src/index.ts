@@ -5,6 +5,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
+import { auth } from "./auth.js";
+
 // import domain routers
 import { chatRouter } from "./routes/chat.js";
 import { workspacesRouter } from "./routes/workspaces.js";
@@ -22,6 +24,12 @@ app.use(
   }),
 );
 
+// Better Auth auth handler
+app.all("/auth/**", (c) => {
+  // extract raw Web Standard Request object and pass it to the engine
+  return auth.handler(c.req.raw);
+});
+
 // health check
 app.get("/health", (c) => c.json({ status: "online" }));
 
@@ -32,12 +40,9 @@ app.route("/levels", levelsRouter);
 
 const port = Number(process.env.PORT) || 8080;
 
-// 2. Add observability so you know exactly when the event loop is ready
-console.log(`\n[System] Backend initializing...`);
 console.log(
   `[System] Hono Server successfully running on http://localhost:${port}`,
 );
-console.log(`[System] Awaiting connections...\n`);
 
 serve({
   fetch: app.fetch,

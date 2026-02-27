@@ -6,11 +6,17 @@ import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db } from "../db/connection.js";
-import { messages } from "../db/schema.js";
+import { messages, workspaces } from "../db/schema.js";
+import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
+import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
+
 // initialize sub-router and ai client
-export const chatRouter = new Hono();
+export const chatRouter = new Hono<AuthEnv>();
+
+// every endpoint must use the middleware
+chatRouter.use("/*", requireAuth);
 
 // explicitly inject api key
 if (!process.env.GEMINI_API_KEY) {
@@ -131,6 +137,8 @@ const systemMsgSchema = z.object({
  *  ------------------
  */
 chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
+  const user = c.get("user");
+
   // 1. Get the contents of the request
   const {
     workspaceId,
@@ -140,6 +148,18 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
     history = [],
     isReview,
   } = c.req.valid("json");
+
+  // TENANT ISOLATION: verify physical ownership of the workspace
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)))
+    .limit(1);
+
+  if (!workspace) {
+    // if they don't own it, reject the request before hitting Gemini
+    return c.json({ error: "Workspace not found or unauthorized" }, 403);
+  }
 
   const displayContent = isReview ? "Review my code." : prompt;
   let llmPrompt = prompt;
@@ -218,7 +238,19 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
 });
 
 chatRouter.post("/system", zValidator("json", systemMsgSchema), async (c) => {
+  const user = c.get("user");
   const { workspaceId, content } = c.req.valid("json");
+
+  // verify workspace ownership
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)))
+    .limit(1);
+
+  if (!workspace) {
+    return c.json({ error: "Unauthorized." }, 403);
+  }
 
   await db.insert(messages).values({
     id: `msg_${randomUUID()}`,

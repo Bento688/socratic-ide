@@ -1,7 +1,20 @@
-import React from "react";
-import { Command, Github, Cpu, BookOpen } from "lucide-react";
+import React, { useState } from "react";
+import {
+  Command,
+  Github,
+  Cpu,
+  BookOpen,
+  User,
+  LogOut,
+  Loader2,
+} from "lucide-react";
+import { LoginModal } from "./LoginModal";
+import { useSession, signOut } from "../../lib/auth-client";
 
 export const Navbar: React.FC = () => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { data: session, isPending } = useSession();
+
   return (
     <nav className="h-14 border-b border-zinc-900 bg-[#09090b] flex items-center justify-between px-6 select-none shrink-0 z-50">
       <div className="flex items-center gap-3 group cursor-pointer">
@@ -27,12 +40,56 @@ export const Navbar: React.FC = () => {
           <BookOpen size={12} />
           <span>Manifesto</span>
         </div>
+
         <div className="w-px h-3 bg-zinc-800" />
+
         <div className="flex items-center gap-2 hover:text-white transition-colors cursor-pointer">
           <Github size={12} />
           <span>v1.0.0</span>
         </div>
+
+        {/* --- AUTHENTICATION MODULE --- */}
+        <div className="w-px h-3 bg-zinc-800" />
+
+        <div className="flex items-center gap-3">
+          {isPending ? (
+            <Loader2 size={12} className="animate-spin text-zinc-600" />
+          ) : session ? (
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-1.5 text-zinc-300">
+                {session.user.image ? (
+                  <img
+                    src={session.user.image}
+                    alt="Avatar"
+                    className="w-4 h-4 rounded-sm"
+                  />
+                ) : (
+                  <User size={12} />
+                )}
+                <span className="tracking-wider">{session.user.name}</span>
+              </div>
+              <button
+                onClick={() => signOut()}
+                className="flex items-center gap-1.5 hover:text-red-400 transition-colors uppercase tracking-wider cursor-pointer"
+              >
+                <LogOut size={12} />
+                <span>Logout</span>
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center gap-1.5 text-white hover:text-zinc-300 transition-colors uppercase tracking-wider cursor-pointer"
+            >
+              <User size={12} />
+              <span>Login</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* The Modal remains decoupled from the flex layout */}
+      <LoginModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />
     </nav>
   );
 };

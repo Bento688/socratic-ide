@@ -1,7 +1,7 @@
 import React from "react";
 import { X, Plus, Terminal } from "lucide-react";
 import { clsx } from "clsx";
-import { useSessionStore } from "@/src/stores/useSessionStore";
+import { useSessionStore } from "../../stores/useSessionStore";
 
 export const TabBar: React.FC = () => {
   // imports from store

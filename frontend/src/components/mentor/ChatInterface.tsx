@@ -17,9 +17,9 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "../ui/Button";
 import { sendMessageStream } from "../../services/GeminiService";
 import { Message, ChatStatus, Persona } from "../../types";
-import { useSessionStore } from "@/src/stores/useSessionStore";
-import { useUIStore } from "@/src/stores/useUIStore";
-import { api } from "@/src/lib/axios";
+import { useSessionStore } from "../../stores/useSessionStore";
+import { useUIStore } from "../../stores/useUIStore";
+import { api } from "../../lib/axios";
 
 const ChatInterface: React.FC = () => {
   // wire up ui store

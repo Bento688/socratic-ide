@@ -5,10 +5,15 @@ import { db } from "../db/connection.js";
 import { messages, workspaces } from "../db/schema.js";
 import { eq, desc, and } from "drizzle-orm";
 
+import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
+
 // use built-in crypto module to generate unique IDs
 import { randomUUID } from "crypto";
 
-export const workspacesRouter = new Hono();
+export const workspacesRouter = new Hono<AuthEnv>();
+
+// every single endpoint must be guarded by middleware
+workspacesRouter.use("/*", requireAuth);
 
 // DTO
 const workspaceSchema = z.object({
@@ -20,8 +25,8 @@ workspacesRouter.post("/", zValidator("json", workspaceSchema), async (c) => {
   // zod guarantees the data is perfectly shaped before this line runs
   const { persona } = c.req.valid("json");
 
-  //** Hard coded seed */
-  const userId = "dev-user-1";
+  // extract user identity
+  const user = c.get("user");
 
   // generate clean UUID for the new workspace
   const workspaceId = `ws_${randomUUID()}`;
@@ -29,7 +34,7 @@ workspacesRouter.post("/", zValidator("json", workspaceSchema), async (c) => {
   // execute drizzle insert
   await db.insert(workspaces).values({
     id: workspaceId,
-    userId: userId,
+    userId: user.id,
     persona: persona,
   });
 
@@ -37,7 +42,7 @@ workspacesRouter.post("/", zValidator("json", workspaceSchema), async (c) => {
   return c.json(
     {
       success: true,
-      workspace: { id: workspaceId, persona, userId },
+      workspace: { id: workspaceId, persona, userId: user.id },
     },
     201,
   );
@@ -45,11 +50,11 @@ workspacesRouter.post("/", zValidator("json", workspaceSchema), async (c) => {
 
 // get route : fetch all workspaces for the logged-in user
 workspacesRouter.get("/", async (c) => {
-  const userId = "dev-user-1";
+  const user = c.get("user");
 
   // use relational API to fetch workspaces, sorted by newest first
   const userWorkspaces = await db.query.workspaces.findMany({
-    where: eq(workspaces.userId, userId),
+    where: eq(workspaces.userId, user.id),
     orderBy: desc(workspaces.updatedAt),
     with: {
       workspaceLevels: {
@@ -77,11 +82,11 @@ workspacesRouter.get("/", async (c) => {
 
 workspacesRouter.get("/:id", async (c) => {
   const workspaceId = c.req.param("id");
-  const userId = "dev-user-1"; // hardcoded
+  const user = c.get("user");
 
   // query the exact workspace AND include its messages, sorted chronologically
   const workspaceData = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, workspaceId), eq(workspaces.userId, userId)),
+    where: and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)),
     with: {
       messages: {
         orderBy: (messages, { asc }) => [asc(messages.createdAt)],
@@ -114,13 +119,13 @@ workspacesRouter.patch(
   async (c) => {
     const workspaceId = c.req.param("id");
     const { persona } = c.req.valid("json");
-    const userId = "dev-user-1"; // hardcoded seed
+    const user = c.get("user");
 
     await db
       .update(workspaces)
       .set({ persona })
       .where(
-        and(eq(workspaces.id, workspaceId), eq(workspaces.userId, userId)),
+        and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)),
       );
 
     return c.json({ success: true }, 200);
@@ -129,14 +134,14 @@ workspacesRouter.patch(
 
 workspacesRouter.delete("/:id", async (c) => {
   const workspaceId = c.req.param("id");
-  const userId = "dev-user-1"; // the hardcoded seed
+  const user = c.get("user");
 
   // execute delete
   // strictly enforce the userId so a malicious user
   // can't send a random ID and delete someone else's project.
   await db
     .delete(workspaces)
-    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, userId)));
+    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)));
 
   return c.json({ success: true }, 200);
 });

@@ -1,7 +1,7 @@
 import React from "react";
 import { CheckCircle2, XCircle, Info } from "lucide-react";
 import { clsx } from "clsx";
-import { useUIStore } from "@/src/stores/useUIStore";
+import { useUIStore } from "../../stores/useUIStore";
 
 export const ToastViewport: React.FC = () => {
   // import toasts from useUIStore
