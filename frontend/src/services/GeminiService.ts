@@ -10,6 +10,9 @@ export const sendMessageStream = async function* (
   isReview: boolean = false,
 ) {
   try {
+    // =====================
+    // FORMULATING RESPONSES
+    // =====================
     const response = await fetch(`${import.meta.env.VITE_API_URL}/chat`, {
       method: "POST",
 
@@ -28,14 +31,18 @@ export const sendMessageStream = async function* (
       }),
     });
 
-    // 1. Session expiration
+    // =========================
+    // AFTER RECEIVING RESPONSES
+    // =========================
+
+    // === (ERROR: 401 Unauthorized) ===
     if (response.status === 401) {
       useUIStore.getState().openLoginModal();
       yield "\n\n*[System: Authentication required. Session expired.]*";
       return;
     }
 
-    // 2. Velocity Throttle (Chat Spam)
+    // === (ERROR: 429 Too many requests) ===
     if (response.status === 429) {
       const errorData = await response.json().catch(() => ({}));
       const errorMsg =
@@ -45,6 +52,21 @@ export const sendMessageStream = async function* (
       useUIStore.getState().showToast("error", "Rate limit exceeded");
       yield `\n\n*[System: ${errorMsg}]*`;
       return; // Halt stream
+    }
+
+    // === (ERROR: 402 Payment required) ===
+    if (response.status === 402) {
+      const errorData = await response.json().catch(() => ({}));
+
+      let timeString = "tomorrow";
+
+      if (errorData.unlockTime) {
+        // === trigger global modal with timestamp ===
+        useUIStore.getState().openQuotaModal(errorData.unlockTime);
+      }
+
+      yield `\n\n*[System: Daily energy depleted. See the pop-up for details.]*`;
+      return; // == halt the generator ==
     }
 
     if (!response.ok || !response.body) {

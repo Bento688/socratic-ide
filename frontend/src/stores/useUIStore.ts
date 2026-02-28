@@ -2,27 +2,46 @@ import { create } from "zustand";
 import { Toast, ToastType } from "../types";
 
 interface UIState {
-  // --- State ---
+  // === State ===
   toasts: Toast[];
+
   isTerminalOpen: boolean;
+
   isLoginModalOpen: boolean;
 
-  // --- Actions ---
+  isQuotaModalOpen: boolean;
+
+  quotaUnlockTime: number | null;
+
+  // === Actions ===
   setIsTerminalOpen: (isOpen: boolean) => void;
   showToast: (type: ToastType, message: string) => void;
+
   openLoginModal: () => void;
   closeLoginModal: () => void;
+
+  openQuotaModal: (unlockTime: number) => void;
+  closeQuotaModal: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
+  // =============
   // Initial State
+  // =============
   toasts: [],
   isTerminalOpen: true, // Default to true, matching your original context
   isLoginModalOpen: false,
+  isQuotaModalOpen: false,
+  quotaUnlockTime: null,
 
+  // =======
   // Actions
+  // =======
+
+  // === Terminal Controls ===
   setIsTerminalOpen: (isOpen) => set({ isTerminalOpen: isOpen }),
 
+  // === Toast Controls ===
   showToast: (type, message) => {
     const id = Date.now().toString() + Math.random().toString();
 
@@ -39,7 +58,14 @@ export const useUIStore = create<UIState>((set) => ({
     }, 4000);
   },
 
+  // === Login Modal Controls ===
   openLoginModal: () => set({ isLoginModalOpen: true }),
 
   closeLoginModal: () => set({ isLoginModalOpen: false }),
+
+  // === Quota Modal Controls ===
+  openQuotaModal: (unlockTime) =>
+    set({ isQuotaModalOpen: true, quotaUnlockTime: unlockTime }),
+
+  closeQuotaModal: () => set({ isQuotaModalOpen: false }),
 }));

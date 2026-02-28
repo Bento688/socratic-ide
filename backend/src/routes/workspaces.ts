@@ -2,54 +2,74 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db } from "../db/connection.js";
-import { messages, workspaces } from "../db/schema.js";
-import { eq, desc, and } from "drizzle-orm";
+import { workspaces } from "../db/schema.js";
+import { eq, desc, and, count } from "drizzle-orm";
 
 import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
 import { velocityThrottle } from "../middleware/rateLimiter.js";
 
-// use built-in crypto module to generate unique IDs
+// === use built-in crypto module to generate unique IDs ===
 import { randomUUID } from "crypto";
 
 export const workspacesRouter = new Hono<AuthEnv>();
 
-// every single endpoint must be guarded by middleware
+// === every single endpoint must be guarded by middleware ===
 workspacesRouter.use("/*", requireAuth);
 
-/**
- *  --- DTO ---
- */
+// ============
+// --- DTO ---
+// ============
 const workspaceSchema = z.object({
   persona: z.enum(["helios", "athena"]),
 });
 
-/**
- * --- ROUTES ---
- */
+// ==============
+// --- ROUTES ---
+// ==============
 
+// ==============================
 // POST => create a new workspace
+// ==============================
 workspacesRouter.post(
   "/",
   velocityThrottle("create_workspace", 5000),
   zValidator("json", workspaceSchema),
   async (c) => {
-    // zod guarantees the data is perfectly shaped before this line runs
+    // === zod guarantees the data is perfectly shaped before this line runs ===
     const { persona } = c.req.valid("json");
 
-    // extract user identity
+    // === extract user identity ===
     const user = c.get("user");
 
-    // generate clean UUID for the new workspace
+    // ==============
+    // RESOURCE GATE
+    // ==============
+    // === count how many workspaces the user owns ===
+    const [{ workspaceCount }] = await db
+      .select({ workspaceCount: count() })
+      .from(workspaces)
+      .where(eq(workspaces.userId, user.id));
+
+    if (workspaceCount >= 5) {
+      return c.json(
+        {
+          error:
+            "Workspace limit reached (5/5). Please delete an old workspace to create a new one.",
+        },
+        403, // 403 Forbidden
+      );
+    }
+
+    // === generate clean UUID for the new workspace ===
     const workspaceId = `ws_${randomUUID()}`;
 
-    // execute drizzle insert
     await db.insert(workspaces).values({
       id: workspaceId,
       userId: user.id,
       persona: persona,
     });
 
-    // return the created ID so the frontend can immediately navigate to it
+    // === return the created ID so the frontend can immediately navigate to it ===
     return c.json(
       {
         success: true,
@@ -60,11 +80,12 @@ workspacesRouter.post(
   },
 );
 
+// ====================================================
 // GET => get ALL of the workspaces of a logged-in user
+// ====================================================
 workspacesRouter.get("/", async (c) => {
   const user = c.get("user");
 
-  // use relational API to fetch workspaces, sorted by newest first
   const userWorkspaces = await db.query.workspaces.findMany({
     where: eq(workspaces.userId, user.id),
     orderBy: desc(workspaces.updatedAt),
@@ -82,7 +103,7 @@ workspacesRouter.get("/", async (c) => {
     },
   });
 
-  // return the found workspaces to the frontend
+  // === return the found workspaces to the frontend ===
   return c.json(
     {
       success: true,
@@ -92,12 +113,14 @@ workspacesRouter.get("/", async (c) => {
   );
 });
 
+// ===========================================================
 // GET => get the payload (messages and levels) of a workspace
+// ===========================================================
 workspacesRouter.get("/:id", async (c) => {
   const workspaceId = c.req.param("id");
   const user = c.get("user");
 
-  // query the exact workspace AND include its messages, sorted chronologically
+  // === query the exact workspace AND include its messages, sorted chronologically ===
   const workspaceData = await db.query.workspaces.findFirst({
     where: and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)),
     with: {
@@ -125,7 +148,9 @@ workspacesRouter.get("/:id", async (c) => {
   );
 });
 
+// ==========================================
 // PATCH => update the persona of a workspace
+// ==========================================
 workspacesRouter.patch(
   "/:id",
   velocityThrottle("update_persona", 4000),
@@ -146,7 +171,9 @@ workspacesRouter.patch(
   },
 );
 
+// ============================
 // DELETE => delete a workspace
+// ============================
 workspacesRouter.delete(
   "/:id",
   velocityThrottle("delete_workspace", 500),

@@ -5,7 +5,9 @@ import { TabBar } from "../components/ui/TabBar";
 import { TaskBanner } from "../components/ui/TaskBanner";
 import { ToastViewport } from "../components/ui/Toast";
 import { IDESkeleton } from "../components/ui/skeletons/IDESkeleton";
-import { LoginModal } from "@/components/ui/LoginModal";
+
+import { LoginModal } from "@/components/ui/modals/LoginModal";
+import { QuotaModal } from "@/components/ui/modals/QuotaModal";
 
 import { useSessionStore } from "../stores/useSessionStore";
 import { useUIStore } from "@/stores/useUIStore";
@@ -15,18 +17,18 @@ import { ShieldAlert } from "lucide-react";
 
 import { useEffect, useState } from "react";
 
-// Banner Component
-
+// =====================
 // Main Layout Component
+// =====================
 const IDE = () => {
-  /**
-   * --- CHECK AUTH STATE ---
-   */
+  // ========================
+  // --- CHECK AUTH STATE ---
+  // ========================
   const { data: session, isPending } = useSession();
 
-  /**
-   * --- LOAD SESSIONS ---
-   */
+  // =====================
+  // --- LOAD SESSIONS ---
+  // =====================
   const loadSessions = useSessionStore((state) => state.loadSessions);
 
   useEffect(() => {
@@ -38,9 +40,9 @@ const IDE = () => {
 
   const { isLoginModalOpen, closeLoginModal } = useUIStore();
 
-  /**
-   *  --- CHECK MOBILE DEVICE ---
-   */
+  // ============================
+  // --- CHECK MOBILE DEVICE ---
+  // ============================
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   useEffect(() => {
@@ -49,12 +51,16 @@ const IDE = () => {
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // --- THE GATEKEEPER ---
+  // ======================
+  // COMPONENTS GENERATOR
+  // ======================
+
+  // --- RETURN SKELETON IF LOADING ---
   if (isPending) {
     return <IDESkeleton />;
   }
 
-  // --- MOBILE CHECK ---
+  // --- REFUSE TO SERVE IF MOBILE ---
   if (isMobile) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-[#09090b] text-zinc-500 p-8 text-center font-mono">
@@ -72,7 +78,7 @@ const IDE = () => {
     );
   }
 
-  // --- RETURN IDE IF VALID ---
+  // --- RETURN IDE IF VALID VIEWPORT SIZE ---
   return (
     <div className="flex flex-col h-screen w-screen bg-[#09090b] text-zinc-200 overflow-hidden font-sans">
       <Navbar />
@@ -93,6 +99,8 @@ const IDE = () => {
 
       {/* Global Login Modal overlay */}
       <LoginModal isOpen={isLoginModalOpen} onClose={closeLoginModal} />
+
+      <QuotaModal />
     </div>
   );
 };

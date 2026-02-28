@@ -15,6 +15,13 @@
       "when": 1772170192086,
       "tag": "0001_famous_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1772264360464,
+      "tag": "0002_spicy_calypso",
+      "breakpoints": true
     }
   ]
 }

@@ -19,7 +19,6 @@ import { sendMessageStream } from "../../services/GeminiService";
 import { Message, ChatStatus, Persona } from "../../types";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { useUIStore } from "../../stores/useUIStore";
-import { api } from "../../lib/axios";
 import { useSession } from "@/lib/auth-client";
 
 const ChatInterface: React.FC = () => {
@@ -619,13 +618,27 @@ const ChatInterface: React.FC = () => {
                               </div>
                             </blockquote>
                           ),
+                          // ... inside your ReactMarkdown components prop ...
                           code: ({ node, ...props }) => {
                             const { inline, className, children } =
                               props as any;
                             const match = /language-(\w+)/.exec(
                               className || "",
                             );
-                            return !inline ? (
+
+                            // Convert children to a flat string to analyze its physical size
+                            const codeString = String(children).replace(
+                              /\n$/,
+                              "",
+                            );
+
+                            // HEURISTIC CHECK:
+                            // Is it explicitly marked inline? OR does it lack newlines entirely?
+                            const isActuallyInline =
+                              inline || !codeString.includes("\n");
+
+                            return !isActuallyInline ? (
+                              // The Massive Code Block
                               <div className="relative my-4 rounded-sm border border-zinc-800 bg-[#0c0c0e] overflow-hidden group">
                                 <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/30">
                                   <span className="text-[10px] text-zinc-500 font-mono uppercase">
@@ -637,10 +650,13 @@ const ChatInterface: React.FC = () => {
                                 </pre>
                               </div>
                             ) : (
+                              // The Small Inline Code
                               <code
-                                className="bg-white/5 text-zinc-200 px-1.5 py-0.5 rounded-xs font-mono text-[0.85em] align-baseline border border-white/5 mx-0.5"
+                                className="bg-white/5 text-zinc-200 px-1.5 py-0.5 rounded-xs font-mono text-[0.85em] align-baseline border border-white/5 mx-0.5 whitespace-nowrap"
                                 {...props}
-                              />
+                              >
+                                {children}
+                              </code>
                             );
                           },
                         }}

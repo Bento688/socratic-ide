@@ -9,6 +9,7 @@ import {
   LogEntry,
 } from "../types";
 import { api } from "../lib/axios";
+import { useUIStore } from "@/stores/useUIStore";
 
 /**
  * --- INTERFACES FOR WHAT THE BACKEND RETURNS ---
@@ -283,6 +284,18 @@ export const useSessionStore = create<SessionState>()(
       try {
         // 1. read the current state outside of the mutation block
         const state = get();
+
+        // === if workspaces >= 5, refuse ===
+        if (state.sessions.length >= 5) {
+          useUIStore
+            .getState()
+            .showToast(
+              "error",
+              "Workspace limit reached (5/5). Please delete an old workspace to create a new one.",
+            );
+          return;
+        }
+
         const activeSession = state.sessions.find(
           (s) => s.id === state.activeSessionId,
         );
@@ -333,6 +346,9 @@ export const useSessionStore = create<SessionState>()(
 
       if (state.sessions.length === 1) return; // prevent closing last tab
 
+      // === record if the tab being deleted is the one we are currently looking at ===
+      const wasActive = state.activeSessionId === id;
+
       // 1. lock UI
       set((draft) => {
         if (!draft.deletingIds.includes(id)) {
@@ -361,6 +377,12 @@ export const useSessionStore = create<SessionState>()(
           // 3.4 release the lock
           draft.deletingIds = draft.deletingIds.filter((dId) => dId !== id);
         });
+
+        // 3.5 hydrate the fallback tab
+        if (wasActive) {
+          const newActiveId = get().activeSessionId;
+          get().fetchWorkspacePayload(newActiveId);
+        }
       } catch (error) {
         // 4. (429 throttle): release the lock, leave the tab alive
         console.error(`Deletion rejected for workspace ${id}:`, error);

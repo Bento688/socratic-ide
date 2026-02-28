@@ -6,8 +6,13 @@ import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db } from "../db/connection.js";
-import { messages, workspaceLevels, workspaces } from "../db/schema.js";
-import { eq, and, desc } from "drizzle-orm";
+import {
+  messages,
+  userQuotas,
+  workspaceLevels,
+  workspaces,
+} from "../db/schema.js";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
@@ -27,9 +32,9 @@ if (!process.env.GEMINI_API_KEY) {
 // create the GoogleGenAI client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-/** ----------------------
+/** ======================
  *  --- SYSTEM PROMPTS ---
- *  ----------------------
+ *  ======================
  */
 
 // --- SHARED PROTOCOL ---
@@ -41,6 +46,9 @@ const PROTOCOL_INSTRUCTIONS = `
    - **Provide the "Legos"**: Show the generic pattern or API signature.
    - **Then ask them to build**: Ask them to apply that pattern to the specific problem in the editor.
 3. **SOCRATIC METHOD**: After providing the syntax/tools, ask questions to guide them.
+4. **MARKDOWN DISCIPLINE**: 
+   - Use SINGLE backticks for inline syntax, variables, or keywords (e.g., \`if\`, \`else\`, \`count\`).
+   - Use TRIPLE backticks ONLY for multi-line code blocks showing generic patterns.
 
 ### STRICT OUTPUT FORMAT
 You MUST structure EVERY single response using this exact template. The delimiter "|||JSON|||" is mandatory and must separate your conversation from the data payload.
@@ -106,9 +114,9 @@ You are the **Obsessive Prodigy**. You are a brilliant coding genius who acts li
 Give the user the "ingredients" (syntax examples) enthusiastically, then smother them with affection and pressure to apply them correctly because "we belong together".
 `;
 
-/** ------------------
+/** ==================
  * --- DTO SCHEMA ----
- * -------------------
+ * ===================
  */
 
 const chatDTOSchema = z.object({
@@ -128,9 +136,9 @@ const chatDTOSchema = z.object({
   isReview: z.boolean().optional().default(false),
 });
 
-/** ------------------
+/** ==================
  *  --- Route ---
- *  ------------------
+ *  ==================
  */
 chatRouter.post(
   "/",
@@ -139,7 +147,7 @@ chatRouter.post(
   async (c) => {
     const user = c.get("user");
 
-    // 1. Get the contents of the request
+    // === GET CONTENTS OF REQUEST ===
     const {
       workspaceId,
       prompt,
@@ -149,7 +157,9 @@ chatRouter.post(
       isReview,
     } = c.req.valid("json");
 
+    // ============================================================
     // TENANT ISOLATION: verify physical ownership of the workspace
+    // ============================================================
     const [workspace] = await db
       .select()
       .from(workspaces)
@@ -163,6 +173,70 @@ chatRouter.post(
       return c.json({ error: "Workspace not found or unauthorized" }, 403);
     }
 
+    // ===================================
+    // THE TOLLBOOTH (Financial Firewall)
+    // ===================================
+
+    const now = new Date();
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+    // === fetch user ledger ===
+    let [quota] = await db
+      .select()
+      .from(userQuotas)
+      .where(eq(userQuotas.userId, user.id))
+      .limit(1);
+
+    if (!quota) {
+      // === CASE 1 : first message ===
+      // === initialize if it's first message ===
+      await db.insert(userQuotas).values({
+        id: `qta_${randomUUID()}`,
+        userId: user.id,
+        messageCount: 0,
+        lastResetAt: now,
+      });
+      // === use mock object for the rest of the thread ===
+      quota = {
+        id: "",
+        userId: user.id,
+        messageCount: 0,
+        lastResetAt: now,
+      };
+    } else {
+      // === CASE 2 : NOT their first message
+      // === calculate time since last reset ===
+      const timeSinceLastReset = now.getTime() - quota.lastResetAt.getTime();
+
+      if (timeSinceLastReset >= TWENTY_FOUR_HOURS_MS) {
+        // === it has been more than 24 hours ===
+        await db
+          .update(userQuotas)
+          .set({ messageCount: 0, lastResetAt: now })
+          .where(eq(userQuotas.userId, user.id));
+
+        quota.messageCount = 0;
+        quota.lastResetAt = now;
+      }
+
+      // === enforcement ===
+      if (quota.messageCount >= 20) {
+        // === calculate the exact moment the lock lifts ===
+
+        const unlockTimeMs = quota.lastResetAt.getTime() + TWENTY_FOUR_HOURS_MS;
+        return c.json(
+          {
+            error: "Energy depleted",
+            unlockTime: unlockTimeMs,
+          },
+          402, // 402 payment required
+        );
+      }
+    }
+
+    // =====================================
+    // PROCESS THE MESSAGE TO BE SENT TO LLM
+    // =====================================
     const displayContent = isReview ? "Review my code." : prompt;
     let llmPrompt = prompt;
 
@@ -170,7 +244,7 @@ chatRouter.post(
       llmPrompt = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${code}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
     }
 
-    // 2. Immediately log the user's message to the database
+    // === immediately save user message to db ===
     await db.insert(messages).values({
       id: `msg_${randomUUID()}`,
       workspaceId: workspaceId,
@@ -181,7 +255,7 @@ chatRouter.post(
     const systemInstruction =
       persona === "athena" ? ATHENA_INSTRUCTION : HELIOS_INSTRUCTION;
 
-    // map history, filtering out UI system messages
+    // === DATA CLEANING : filter out UI system messages from history ===
     const formattedContents = history
       .filter((m) => m.role !== "system")
       .map((m) => ({
@@ -189,7 +263,7 @@ chatRouter.post(
         parts: [{ text: m.content }],
       }));
 
-    // append the current conversational turn
+    // === append current user message to the clean history ===
     formattedContents.push({
       role: "user",
       parts: [
@@ -199,11 +273,17 @@ chatRouter.post(
       ],
     });
 
+    // =======================================
+    //  stream the text to the frontend
+    // =======================================
     return streamText(c, async (stream) => {
-      // accumulator variable
+      // === accumulator variable ===
       let aiFullResponse = "";
 
       try {
+        // ========================================
+        // === let gemini generate the response ===
+        // ========================================
         const responseStream = await ai.models.generateContentStream({
           model: "gemini-2.5-flash",
           contents: formattedContents,
@@ -222,11 +302,16 @@ chatRouter.post(
           }
         }
 
-        // scrub the JSON block before saving to MySQL
+        // ============================================
+        // PROCESSING THE DATA AFTER RECEIVING RESPONSE
+        // ============================================
+
+        // === scrub the JSON block before saving to MySQL ===
+        // parts[0] => response to user | parts[1] => JSON metadata
         const parts = aiFullResponse.split("|||JSON|||");
         const cleanModelResponse = parts[0].trim();
 
-        // once stream is finished, save the ai response to MySQL
+        // === once stream is finished, save the ai response to MySQL ===
         await db.insert(messages).values({
           id: `msg_${randomUUID()}`,
           workspaceId: workspaceId,
@@ -234,23 +319,38 @@ chatRouter.post(
           content: cleanModelResponse,
         });
 
+        // ==============================
+        // INCREMENT USER'S USAGE COUNTER
+        // ==============================
+        await db
+          .update(userQuotas)
+          .set({ messageCount: sql`${userQuotas.messageCount} + 1` })
+          .where(eq(userQuotas.userId, user.id));
+
+        // ============================
+        // PROCESSING THE JSON METADATA
+        // ============================
+
         // parse the JSON and securely inject system message sequentially
         if (parts.length > 1) {
           try {
+            // === GET THE JSON AS STRING ===
             const metadataStr = parts[1].trim();
             const jsonStart = metadataStr.indexOf("{");
             const jsonEnd = metadataStr.lastIndexOf("}") + 1;
 
             if (jsonStart !== -1 && jsonEnd !== -1) {
-              // if valid JSON
+              // === if valid JSON (not out of bounds) ===
               const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
               const metadata = JSON.parse(jsonStr); // convert into real JSON
 
+              // === IF USER HAS PASSED THE TEST && THERE IS A NEW OBJECTIVE ===
               if (metadata.pass === true && metadata.newObjective) {
-                // artifically create a 1-second delay to make sure MySQL saves ai response first
+                // === artifically create a 1-second delay to make sure
+                // === MySQL saves ai response first (prevent race conditions)
                 await new Promise((resolve) => setTimeout(resolve, 1000));
 
-                // 1. insert system message
+                // === 1. insert system message after the delay ===
                 await db.insert(messages).values({
                   id: `msg_${randomUUID()}`,
                   workspaceId: workspaceId,
@@ -258,7 +358,7 @@ chatRouter.post(
                   content: `🎯 Current Task: ${metadata.newObjective}`,
                 });
 
-                // 2. calculate the next step number directly from DB
+                // === 2. calculate the next step number directly from DB ===
                 const [latestLevel] = await db
                   .select()
                   .from(workspaceLevels)
@@ -270,7 +370,7 @@ chatRouter.post(
                   ? latestLevel.stepNumber + 1
                   : 0;
 
-                // 3. provision the new level directly in MySQL
+                // === 3. provision the new level directly in MySQL ===
                 await db.insert(workspaceLevels).values({
                   id: `lvl_${randomUUID()}`,
                   workspaceId: workspaceId,

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, Loader2, Github } from "lucide-react";
-import { signIn } from "../../lib/auth-client"; // The tools we exported
+import { signIn } from "../../../lib/auth-client"; // The tools we exported
 
 interface LoginModalProps {
   isOpen: boolean;

@@ -7,6 +7,7 @@ import {
   int,
   text,
   boolean,
+  unique,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -52,6 +53,16 @@ export const account = mysqlTable("account", {
   password: text("password"), // password hashes are stored here
   createdAt: timestamp("created_at").notNull(),
   updatedAt: timestamp("updated_at").notNull(),
+});
+
+export const userQuotas = mysqlTable("user_quotas", {
+  id: varchar("id", { length: 255 }).primaryKey(),
+  userId: varchar("user_id", { length: 255 })
+    .notNull()
+    .unique()
+    .references(() => user.id, { onDelete: "cascade" }),
+  messageCount: int("message_count").default(0).notNull(),
+  lastResetAt: timestamp("last_reset_at").defaultNow().notNull(),
 });
 
 export const verification = mysqlTable("verification", {
@@ -104,16 +115,24 @@ export const messages = mysqlTable("messages", {
 // --- USER DOMAIN ---
 
 // 1. A user can have MANY authSessions AND workspaces
-export const userRelations = relations(user, ({ many }) => ({
+export const userRelations = relations(user, ({ many, one }) => ({
   sessions: many(session),
   accounts: many(account),
   workspaces: many(workspaces),
+  quota: one(userQuotas),
 }));
 
 // 2. A authSession belongs to ONE user
 export const sessionRelations = relations(session, ({ one }) => ({
   user: one(user, {
     fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const userQuotasRelations = relations(userQuotas, ({ one }) => ({
+  user: one(user, {
+    fields: [userQuotas.userId],
     references: [user.id],
   }),
 }));
