@@ -5,17 +5,21 @@ interface UIState {
   // --- State ---
   toasts: Toast[];
   isTerminalOpen: boolean;
+  isLoginModalOpen: boolean;
 
   // --- Actions ---
   setIsTerminalOpen: (isOpen: boolean) => void;
   showToast: (type: ToastType, message: string) => void;
   removeToast: (id: string) => void;
+  openLoginModal: () => void;
+  closeLoginModal: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   // Initial State
   toasts: [],
   isTerminalOpen: true, // Default to true, matching your original context
+  isLoginModalOpen: false,
 
   // Actions
   setIsTerminalOpen: (isOpen) => set({ isTerminalOpen: isOpen }),
@@ -41,4 +45,8 @@ export const useUIStore = create<UIState>((set) => ({
       toasts: state.toasts.filter((t) => t.id !== id),
     }));
   },
+
+  openLoginModal: () => set({ isLoginModalOpen: true }),
+
+  closeLoginModal: () => set({ isLoginModalOpen: false }),
 }));

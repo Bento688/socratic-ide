@@ -11,11 +11,15 @@ import { Terminal } from "./Terminal";
 import { Button } from "../ui/Button";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { useUIStore } from "../../stores/useUIStore";
+import { useSession } from "@/lib/auth-client";
 
 const CodeEditor: React.FC = () => {
+  const { data: session } = useSession();
+
   // wire up UI store
   const isTerminalOpen = useUIStore((state) => state.isTerminalOpen);
   const setIsTerminalOpen = useUIStore((state) => state.setIsTerminalOpen);
+  const openLoginModal = useUIStore((state) => state.openLoginModal);
 
   // wire up session store actions
   const setCode = useSessionStore((state) => state.setCode);
@@ -65,6 +69,12 @@ const CodeEditor: React.FC = () => {
   };
 
   const handleRunCode = () => {
+    // if not logged in, refuse
+    if (!session) {
+      openLoginModal();
+      return;
+    }
+
     if (!isTerminalOpen) setIsTerminalOpen(true);
     clearLogs();
     addLog("system", "Running script...");

@@ -5,8 +5,10 @@ import { TabBar } from "../components/ui/TabBar";
 import { TaskBanner } from "../components/ui/TaskBanner";
 import { ToastViewport } from "../components/ui/Toast";
 import { IDESkeleton } from "../components/ui/skeletons/IDESkeleton";
+import { LoginModal } from "@/components/ui/LoginModal";
 
 import { useSessionStore } from "../stores/useSessionStore";
+import { useUIStore } from "@/stores/useUIStore";
 import { useSession } from "../lib/auth-client";
 
 import { ShieldAlert } from "lucide-react";
@@ -20,15 +22,21 @@ const IDE = () => {
   /**
    * --- CHECK AUTH STATE ---
    */
-  const { isPending } = useSession();
+  const { data: session, isPending } = useSession();
 
   /**
    * --- LOAD SESSIONS ---
    */
   const loadSessions = useSessionStore((state) => state.loadSessions);
+
   useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+    if (isPending) return;
+    if (session) {
+      loadSessions();
+    }
+  }, [session, isPending, loadSessions]);
+
+  const { isLoginModalOpen, closeLoginModal } = useUIStore();
 
   /**
    *  --- CHECK MOBILE DEVICE ---
@@ -82,6 +90,9 @@ const IDE = () => {
         </div>
       </div>
       <ToastViewport />
+
+      {/* Global Login Modal overlay */}
+      <LoginModal isOpen={isLoginModalOpen} onClose={closeLoginModal} />
     </div>
   );
 };

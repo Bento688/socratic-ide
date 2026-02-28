@@ -127,11 +127,6 @@ const chatDTOSchema = z.object({
   isReview: z.boolean().optional().default(false),
 });
 
-const systemMsgSchema = z.object({
-  workspaceId: z.string(),
-  content: z.string(),
-});
-
 /** ------------------
  *  --- Route ---
  *  ------------------
@@ -221,7 +216,8 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
       }
 
       // scrub the JSON block before saving to MySQL
-      const cleanModelResponse = aiFullResponse.split("|||JSON|||")[0].trim();
+      const parts = aiFullResponse.split("|||JSON|||");
+      const cleanModelResponse = parts[0].trim();
 
       // once stream is finished, save the ai response to MySQL
       await db.insert(messages).values({
@@ -230,34 +226,38 @@ chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
         role: "model",
         content: cleanModelResponse,
       });
+
+      // parse the JSON and securely inject system message sequentially
+      if (parts.length > 1) {
+        try {
+          const metadataStr = parts[1].trim();
+          const jsonStart = metadataStr.indexOf("{");
+          const jsonEnd = metadataStr.lastIndexOf("}") + 1;
+
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+            // if valid JSON
+            const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
+            const metadata = JSON.parse(jsonStr); // convert into real JSON
+
+            if (metadata.pass === true && metadata.newObjective) {
+              // artifically create a 1-second delay to make sure MySQL saves ai response first
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+
+              await db.insert(messages).values({
+                id: `msg_${randomUUID()}`,
+                workspaceId: workspaceId,
+                role: "system",
+                content: `🎯 Current Task: ${metadata.newObjective}`,
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Backend parsing failed for system message:", error);
+        }
+      }
     } catch (error) {
       console.error("Gemini API Error: ", error);
       await stream.write("\n\n*[Connection Terminated]*");
     }
   });
-});
-
-chatRouter.post("/system", zValidator("json", systemMsgSchema), async (c) => {
-  const user = c.get("user");
-  const { workspaceId, content } = c.req.valid("json");
-
-  // verify workspace ownership
-  const [workspace] = await db
-    .select()
-    .from(workspaces)
-    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)))
-    .limit(1);
-
-  if (!workspace) {
-    return c.json({ error: "Unauthorized." }, 403);
-  }
-
-  await db.insert(messages).values({
-    id: `msg_${randomUUID()}`,
-    workspaceId,
-    role: "system",
-    content,
-  });
-
-  return c.json({ success: true }, 201);
 });

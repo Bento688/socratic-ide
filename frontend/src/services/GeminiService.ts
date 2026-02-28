@@ -1,3 +1,4 @@
+import { useUIStore } from "@/stores/useUIStore";
 import { Persona, Message } from "../types";
 
 export const sendMessageStream = async function* (
@@ -11,6 +12,9 @@ export const sendMessageStream = async function* (
   try {
     const response = await fetch(`${import.meta.env.VITE_API_URL}/chat`, {
       method: "POST",
+
+      credentials: "include",
+
       headers: {
         "Content-Type": "application/json",
       },
@@ -23,6 +27,12 @@ export const sendMessageStream = async function* (
         isReview,
       }),
     });
+
+    if (response.status === 401) {
+      useUIStore.getState().openLoginModal();
+      yield "\n\n*[System: Authentication required. Session expired.]*";
+      return;
+    }
 
     if (!response.ok || !response.body) {
       throw new Error("Network response was not ok");

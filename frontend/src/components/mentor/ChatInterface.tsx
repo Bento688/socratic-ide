@@ -20,10 +20,14 @@ import { Message, ChatStatus, Persona } from "../../types";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { useUIStore } from "../../stores/useUIStore";
 import { api } from "../../lib/axios";
+import { useSession } from "@/lib/auth-client";
 
 const ChatInterface: React.FC = () => {
+  const { data: session } = useSession();
+
   // wire up ui store
   const showToast = useUIStore((state) => state.showToast);
+  const openLoginModal = useUIStore((state) => state.openLoginModal);
 
   // wire up session store actions
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
@@ -78,6 +82,12 @@ const ChatInterface: React.FC = () => {
 
   // Handle Request to Change Persona
   const initiatePersonaSwitch = (newPersona: Persona) => {
+    // if not logged in, refuse
+    if (!session) {
+      openLoginModal();
+      return;
+    }
+
     // If no active session (onboarding), switch immediately
     if (messages.length === 0) {
       handleSelectPersona(newPersona);
@@ -91,6 +101,12 @@ const ChatInterface: React.FC = () => {
 
   // Execute the Persona Switch (Handover)
   const confirmPersonaSwitch = async () => {
+    // if not logged in, refuse
+    if (!session) {
+      openLoginModal();
+      return;
+    }
+
     if (!pendingPersona) return;
 
     const oldPersona = persona;
@@ -189,6 +205,12 @@ const ChatInterface: React.FC = () => {
   };
 
   const handleSend = async (text: string, isReview: boolean = false) => {
+    // if not logged in, refuse
+    if (!session) {
+      openLoginModal();
+      return;
+    }
+
     if ((!text.trim() && !isReview) || status === ChatStatus.STREAMING) return;
     if (!persona) return;
 
@@ -287,16 +309,6 @@ const ChatInterface: React.FC = () => {
                 }
                 return [...prev, systemMsg];
               });
-
-              // 2. save the divider to the DB permanently
-              api
-                .post("/chat/system", {
-                  workspaceId: activeSessionId,
-                  content: nextObjective,
-                })
-                .catch((err) =>
-                  console.error("Failed to save system message:", err),
-                );
 
               setTimeout(() => {
                 advanceToNextLevel(nextObjective, nextCode, nextLang);

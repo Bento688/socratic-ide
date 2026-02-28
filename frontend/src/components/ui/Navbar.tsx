@@ -8,12 +8,24 @@ import {
   LogOut,
   Loader2,
 } from "lucide-react";
-import { LoginModal } from "./LoginModal";
 import { useSession, signOut } from "../../lib/auth-client";
+import { useUIStore } from "@/stores/useUIStore";
 
 export const Navbar: React.FC = () => {
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const { data: session, isPending } = useSession();
+
+  const openLoginModal = useUIStore((state) => state.openLoginModal);
+
+  const handleLogout = async () => {
+    await signOut({
+      fetchOptions: {
+        onSuccess: () => {
+          // physically dumps the React DOM from RAM and request a fresh, clean slate from the server
+          window.location.href = "/";
+        },
+      },
+    });
+  };
 
   return (
     <nav className="h-14 border-b border-zinc-900 bg-[#09090b] flex items-center justify-between px-6 select-none shrink-0 z-50">
@@ -69,7 +81,7 @@ export const Navbar: React.FC = () => {
                 <span className="tracking-wider">{session.user.name}</span>
               </div>
               <button
-                onClick={() => signOut()}
+                onClick={handleLogout}
                 className="flex items-center gap-1.5 hover:text-red-400 transition-colors uppercase tracking-wider cursor-pointer"
               >
                 <LogOut size={12} />
@@ -78,7 +90,7 @@ export const Navbar: React.FC = () => {
             </div>
           ) : (
             <button
-              onClick={() => setIsModalOpen(true)}
+              onClick={openLoginModal} // <-- Trigger the global state
               className="flex items-center gap-1.5 text-white hover:text-zinc-300 transition-colors uppercase tracking-wider cursor-pointer"
             >
               <User size={12} />
@@ -87,9 +99,6 @@ export const Navbar: React.FC = () => {
           )}
         </div>
       </div>
-
-      {/* The Modal remains decoupled from the flex layout */}
-      <LoginModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />
     </nav>
   );
 };

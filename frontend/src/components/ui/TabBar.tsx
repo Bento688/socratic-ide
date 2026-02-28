@@ -2,14 +2,29 @@ import React from "react";
 import { X, Plus, Terminal } from "lucide-react";
 import { clsx } from "clsx";
 import { useSessionStore } from "../../stores/useSessionStore";
+import { useUIStore } from "@/stores/useUIStore";
+import { useSession } from "@/lib/auth-client";
 
 export const TabBar: React.FC = () => {
+  const { data: session } = useSession();
+
   // imports from store
   const sessions = useSessionStore((state) => state.sessions);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const switchSession = useSessionStore((state) => state.switchSession);
   const addSession = useSessionStore((state) => state.addSession);
   const removeSession = useSessionStore((state) => state.removeSession);
+  const openLoginModal = useUIStore((state) => state.openLoginModal);
+
+  const handleAddSession = () => {
+    // if not logged in, refuse
+    if (!session) {
+      openLoginModal();
+      return;
+    }
+
+    addSession();
+  };
 
   return (
     <div className="flex items-center h-9 bg-[#09090b] border-b border-zinc-900 overflow-x-auto scrollbar-hide select-none shrink-0">
@@ -61,7 +76,7 @@ export const TabBar: React.FC = () => {
       ))}
 
       <button
-        onClick={addSession}
+        onClick={handleAddSession}
         className="h-full px-3 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-zinc-900 transition-colors border-r border-zinc-900"
         title="New Chat"
       >
