@@ -19,7 +19,7 @@ api.interceptors.response.use(
 
   // 2. if the request fails, intercept error before it hits the components
   (error) => {
-    // 2.1 check if the server EXPLICITLY rejects the credentials
+    // 2.1 catch session expirations or unauthorized users
     if (error.response && error.response.status === 401) {
       console.warn(
         "Session expired or invalid. Triggering authentication wall.",
@@ -27,6 +27,15 @@ api.interceptors.response.use(
 
       // fire zustand openloginmodal from outside react
       useUIStore.getState().openLoginModal();
+    }
+    // 2.2. catch velocity throttles (spamming workspace creation / updates)
+    else if (error.response && error.response.status === 429) {
+      const errorMessage =
+        error.response.data.error ||
+        "Velocity limit exceeded. Please slow down.";
+
+      // instantly trigger toast mechanism
+      useUIStore.getState().showToast("error", errorMessage);
     }
 
     return Promise.reject(error);

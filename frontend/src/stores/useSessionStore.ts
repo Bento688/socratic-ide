@@ -76,10 +76,11 @@ interface SessionState {
   // --- State ---
   sessions: Session[];
   activeSessionId: string;
+  deletingIds: string[];
 
   // --- Tab Management ---
   addSession: () => void;
-  removeSession: (id: string) => void;
+  removeSession: (id: string) => Promise<void>;
   switchSession: (id: string) => void;
   updateSessionTitle: (id: string, title: string) => void;
 
@@ -121,6 +122,7 @@ export const useSessionStore = create<SessionState>()(
     hasInitialized: false,
     sessions: [createInitialSession("default-session")],
     activeSessionId: "default-session",
+    deletingIds: [],
 
     // --- Bootstrapping & fetching data ---
     loadSessions: async () => {
@@ -326,28 +328,47 @@ export const useSessionStore = create<SessionState>()(
       }
     },
 
-    removeSession: (id) => {
-      // 1. background network call (optimistic deletion)
-      // fire the api call but DO NOT "await" it, preventing UI freezing.
-      // if it fails, we log it.
-      api.delete(`/workspaces/${id}`).catch((err) => {
-        console.error(`Failed to delete workspace ${id} from database:`, err);
-      });
+    removeSession: async (id) => {
+      const state = get();
 
-      // 2. instant local UI update
+      if (state.sessions.length === 1) return; // prevent closing last tab
+
+      // 1. lock UI
       set((draft) => {
-        if (draft.sessions.length === 1) return; // prevent closing the last tab
-
-        const index = draft.sessions.findIndex((s) => s.id === id);
-        if (index !== -1) {
-          draft.sessions.splice(index, 1);
-        }
-
-        // If we close the active tab, fallback to the last available tab
-        if (draft.activeSessionId === id) {
-          draft.activeSessionId = draft.sessions[draft.sessions.length - 1].id;
+        if (!draft.deletingIds.includes(id)) {
+          draft.deletingIds.push(id);
         }
       });
+
+      try {
+        // 2. explicitly wait for the server's verdict
+        await api.delete(`/workspaces/${id}`);
+
+        // 3. success: physically remove the tab and clear the lock
+        set((draft) => {
+          // 3.1 find index
+          const index = draft.sessions.findIndex((s) => s.id === id);
+          // 3.2 remove
+          if (index !== -1) draft.sessions.splice(index, 1);
+
+          // 3.3 if the deleted workspace is the current active one,
+          // default activeSession into the last one
+          if (draft.activeSessionId === id) {
+            draft.activeSessionId =
+              draft.sessions[draft.sessions.length - 1].id;
+          }
+
+          // 3.4 release the lock
+          draft.deletingIds = draft.deletingIds.filter((dId) => dId !== id);
+        });
+      } catch (error) {
+        // 4. (429 throttle): release the lock, leave the tab alive
+        console.error(`Deletion rejected for workspace ${id}:`, error);
+
+        set((draft) => {
+          draft.deletingIds = draft.deletingIds.filter((dId) => dId !== id);
+        });
+      }
     },
 
     switchSession: async (id) => {
@@ -481,20 +502,6 @@ export const useSessionStore = create<SessionState>()(
         (session.history[0].activeTask === "Pending Onboarding..." ||
           session.history[0].activeTask === "Waiting for topic selection..." ||
           session.history[0].activeTask === "Restored Session");
-
-      // calculate what step number this is going to be
-      const nextStepNum = isOnboarding ? 0 : session.currentStep + 1;
-
-      // 2. Background Network Call
-      api
-        .post("/levels", {
-          workspaceId: session.id,
-          stepNumber: nextStepNum,
-          taskTitle: newTask,
-          codeSnapshot: newCode,
-          language: newLanguage,
-        })
-        .catch((err) => console.error("Failed to save level to DB:", err));
 
       // The instant UI update
       set((draft) => {

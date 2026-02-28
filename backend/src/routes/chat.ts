@@ -6,11 +6,12 @@ import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db } from "../db/connection.js";
-import { messages, workspaces } from "../db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { messages, workspaceLevels, workspaces } from "../db/schema.js";
+import { eq, and, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
+import { velocityThrottle } from "../middleware/rateLimiter.js"; // rate limiter to prevent spammers
 
 // initialize sub-router and ai client
 export const chatRouter = new Hono<AuthEnv>();
@@ -131,133 +132,163 @@ const chatDTOSchema = z.object({
  *  --- Route ---
  *  ------------------
  */
-chatRouter.post("/", zValidator("json", chatDTOSchema), async (c) => {
-  const user = c.get("user");
+chatRouter.post(
+  "/",
+  velocityThrottle("chat", 3000),
+  zValidator("json", chatDTOSchema),
+  async (c) => {
+    const user = c.get("user");
 
-  // 1. Get the contents of the request
-  const {
-    workspaceId,
-    prompt,
-    persona,
-    code,
-    history = [],
-    isReview,
-  } = c.req.valid("json");
+    // 1. Get the contents of the request
+    const {
+      workspaceId,
+      prompt,
+      persona,
+      code,
+      history = [],
+      isReview,
+    } = c.req.valid("json");
 
-  // TENANT ISOLATION: verify physical ownership of the workspace
-  const [workspace] = await db
-    .select()
-    .from(workspaces)
-    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)))
-    .limit(1);
+    // TENANT ISOLATION: verify physical ownership of the workspace
+    const [workspace] = await db
+      .select()
+      .from(workspaces)
+      .where(
+        and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)),
+      )
+      .limit(1);
 
-  if (!workspace) {
-    // if they don't own it, reject the request before hitting Gemini
-    return c.json({ error: "Workspace not found or unauthorized" }, 403);
-  }
-
-  const displayContent = isReview ? "Review my code." : prompt;
-  let llmPrompt = prompt;
-
-  if (isReview) {
-    llmPrompt = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${code}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
-  }
-
-  // 2. Immediately log the user's message to the database
-  await db.insert(messages).values({
-    id: `msg_${randomUUID()}`,
-    workspaceId: workspaceId,
-    role: "user",
-    content: displayContent,
-  });
-
-  const systemInstruction =
-    persona === "athena" ? ATHENA_INSTRUCTION : HELIOS_INSTRUCTION;
-
-  // map history, filtering out UI system messages
-  const formattedContents = history
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "user" ? "user" : "model",
-      parts: [{ text: m.content }],
-    }));
-
-  // append the current conversational turn
-  formattedContents.push({
-    role: "user",
-    parts: [
-      {
-        text: `User Message: ${llmPrompt}\n\nCurrent Workspace Code:\n\`\`\`\n${code}\n\`\`\``,
-      },
-    ],
-  });
-
-  return streamText(c, async (stream) => {
-    // accumulator variable
-    let aiFullResponse = "";
-
-    try {
-      const responseStream = await ai.models.generateContentStream({
-        model: "gemini-2.5-flash",
-        contents: formattedContents,
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 1.0,
-          topP: 0.95,
-          topK: 40,
-        },
-      });
-
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          aiFullResponse += chunk.text;
-          await stream.write(chunk.text);
-        }
-      }
-
-      // scrub the JSON block before saving to MySQL
-      const parts = aiFullResponse.split("|||JSON|||");
-      const cleanModelResponse = parts[0].trim();
-
-      // once stream is finished, save the ai response to MySQL
-      await db.insert(messages).values({
-        id: `msg_${randomUUID()}`,
-        workspaceId: workspaceId,
-        role: "model",
-        content: cleanModelResponse,
-      });
-
-      // parse the JSON and securely inject system message sequentially
-      if (parts.length > 1) {
-        try {
-          const metadataStr = parts[1].trim();
-          const jsonStart = metadataStr.indexOf("{");
-          const jsonEnd = metadataStr.lastIndexOf("}") + 1;
-
-          if (jsonStart !== -1 && jsonEnd !== -1) {
-            // if valid JSON
-            const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
-            const metadata = JSON.parse(jsonStr); // convert into real JSON
-
-            if (metadata.pass === true && metadata.newObjective) {
-              // artifically create a 1-second delay to make sure MySQL saves ai response first
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-
-              await db.insert(messages).values({
-                id: `msg_${randomUUID()}`,
-                workspaceId: workspaceId,
-                role: "system",
-                content: `🎯 Current Task: ${metadata.newObjective}`,
-              });
-            }
-          }
-        } catch (error) {
-          console.error("Backend parsing failed for system message:", error);
-        }
-      }
-    } catch (error) {
-      console.error("Gemini API Error: ", error);
-      await stream.write("\n\n*[Connection Terminated]*");
+    if (!workspace) {
+      // if they don't own it, reject the request before hitting Gemini
+      return c.json({ error: "Workspace not found or unauthorized" }, 403);
     }
-  });
-});
+
+    const displayContent = isReview ? "Review my code." : prompt;
+    let llmPrompt = prompt;
+
+    if (isReview) {
+      llmPrompt = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${code}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
+    }
+
+    // 2. Immediately log the user's message to the database
+    await db.insert(messages).values({
+      id: `msg_${randomUUID()}`,
+      workspaceId: workspaceId,
+      role: "user",
+      content: displayContent,
+    });
+
+    const systemInstruction =
+      persona === "athena" ? ATHENA_INSTRUCTION : HELIOS_INSTRUCTION;
+
+    // map history, filtering out UI system messages
+    const formattedContents = history
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role === "user" ? "user" : "model",
+        parts: [{ text: m.content }],
+      }));
+
+    // append the current conversational turn
+    formattedContents.push({
+      role: "user",
+      parts: [
+        {
+          text: `User Message: ${llmPrompt}\n\nCurrent Workspace Code:\n\`\`\`\n${code}\n\`\`\``,
+        },
+      ],
+    });
+
+    return streamText(c, async (stream) => {
+      // accumulator variable
+      let aiFullResponse = "";
+
+      try {
+        const responseStream = await ai.models.generateContentStream({
+          model: "gemini-2.5-flash",
+          contents: formattedContents,
+          config: {
+            systemInstruction: systemInstruction,
+            temperature: 1.0,
+            topP: 0.95,
+            topK: 40,
+          },
+        });
+
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            aiFullResponse += chunk.text;
+            await stream.write(chunk.text);
+          }
+        }
+
+        // scrub the JSON block before saving to MySQL
+        const parts = aiFullResponse.split("|||JSON|||");
+        const cleanModelResponse = parts[0].trim();
+
+        // once stream is finished, save the ai response to MySQL
+        await db.insert(messages).values({
+          id: `msg_${randomUUID()}`,
+          workspaceId: workspaceId,
+          role: "model",
+          content: cleanModelResponse,
+        });
+
+        // parse the JSON and securely inject system message sequentially
+        if (parts.length > 1) {
+          try {
+            const metadataStr = parts[1].trim();
+            const jsonStart = metadataStr.indexOf("{");
+            const jsonEnd = metadataStr.lastIndexOf("}") + 1;
+
+            if (jsonStart !== -1 && jsonEnd !== -1) {
+              // if valid JSON
+              const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
+              const metadata = JSON.parse(jsonStr); // convert into real JSON
+
+              if (metadata.pass === true && metadata.newObjective) {
+                // artifically create a 1-second delay to make sure MySQL saves ai response first
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+
+                // 1. insert system message
+                await db.insert(messages).values({
+                  id: `msg_${randomUUID()}`,
+                  workspaceId: workspaceId,
+                  role: "system",
+                  content: `🎯 Current Task: ${metadata.newObjective}`,
+                });
+
+                // 2. calculate the next step number directly from DB
+                const [latestLevel] = await db
+                  .select()
+                  .from(workspaceLevels)
+                  .where(eq(workspaceLevels.workspaceId, workspaceId))
+                  .orderBy(desc(workspaceLevels.stepNumber))
+                  .limit(1);
+
+                const nextStepNum = latestLevel
+                  ? latestLevel.stepNumber + 1
+                  : 0;
+
+                // 3. provision the new level directly in MySQL
+                await db.insert(workspaceLevels).values({
+                  id: `lvl_${randomUUID()}`,
+                  workspaceId: workspaceId,
+                  stepNumber: nextStepNum,
+                  taskTitle: metadata.newObjective,
+                  codeSnapshot: metadata.newSnippet || code, // fallback to current code if empty
+                  language: metadata.language || "javascript",
+                });
+              }
+            }
+          } catch (error) {
+            console.error("Backend parsing failed for system message:", error);
+          }
+        }
+      } catch (error) {
+        console.error("Gemini API Error: ", error);
+        await stream.write("\n\n*[Connection Terminated]*");
+      }
+    });
+  },
+);

@@ -6,6 +6,7 @@ import { messages, workspaces } from "../db/schema.js";
 import { eq, desc, and } from "drizzle-orm";
 
 import { requireAuth, type AuthEnv } from "../middleware/authMiddleware.js";
+import { velocityThrottle } from "../middleware/rateLimiter.js";
 
 // use built-in crypto module to generate unique IDs
 import { randomUUID } from "crypto";
@@ -15,40 +16,51 @@ export const workspacesRouter = new Hono<AuthEnv>();
 // every single endpoint must be guarded by middleware
 workspacesRouter.use("/*", requireAuth);
 
-// DTO
+/**
+ *  --- DTO ---
+ */
 const workspaceSchema = z.object({
   persona: z.enum(["helios", "athena"]),
 });
 
-// POST route
-workspacesRouter.post("/", zValidator("json", workspaceSchema), async (c) => {
-  // zod guarantees the data is perfectly shaped before this line runs
-  const { persona } = c.req.valid("json");
+/**
+ * --- ROUTES ---
+ */
 
-  // extract user identity
-  const user = c.get("user");
+// POST => create a new workspace
+workspacesRouter.post(
+  "/",
+  velocityThrottle("create_workspace", 5000),
+  zValidator("json", workspaceSchema),
+  async (c) => {
+    // zod guarantees the data is perfectly shaped before this line runs
+    const { persona } = c.req.valid("json");
 
-  // generate clean UUID for the new workspace
-  const workspaceId = `ws_${randomUUID()}`;
+    // extract user identity
+    const user = c.get("user");
 
-  // execute drizzle insert
-  await db.insert(workspaces).values({
-    id: workspaceId,
-    userId: user.id,
-    persona: persona,
-  });
+    // generate clean UUID for the new workspace
+    const workspaceId = `ws_${randomUUID()}`;
 
-  // return the created ID so the frontend can immediately navigate to it
-  return c.json(
-    {
-      success: true,
-      workspace: { id: workspaceId, persona, userId: user.id },
-    },
-    201,
-  );
-});
+    // execute drizzle insert
+    await db.insert(workspaces).values({
+      id: workspaceId,
+      userId: user.id,
+      persona: persona,
+    });
 
-// get route : fetch all workspaces for the logged-in user
+    // return the created ID so the frontend can immediately navigate to it
+    return c.json(
+      {
+        success: true,
+        workspace: { id: workspaceId, persona, userId: user.id },
+      },
+      201,
+    );
+  },
+);
+
+// GET => get ALL of the workspaces of a logged-in user
 workspacesRouter.get("/", async (c) => {
   const user = c.get("user");
 
@@ -80,6 +92,7 @@ workspacesRouter.get("/", async (c) => {
   );
 });
 
+// GET => get the payload (messages and levels) of a workspace
 workspacesRouter.get("/:id", async (c) => {
   const workspaceId = c.req.param("id");
   const user = c.get("user");
@@ -112,9 +125,10 @@ workspacesRouter.get("/:id", async (c) => {
   );
 });
 
-// patch route: update workspace metadata (persona)
+// PATCH => update the persona of a workspace
 workspacesRouter.patch(
   "/:id",
+  velocityThrottle("update_persona", 4000),
   zValidator("json", workspaceSchema),
   async (c) => {
     const workspaceId = c.req.param("id");
@@ -132,16 +146,23 @@ workspacesRouter.patch(
   },
 );
 
-workspacesRouter.delete("/:id", async (c) => {
-  const workspaceId = c.req.param("id");
-  const user = c.get("user");
+// DELETE => delete a workspace
+workspacesRouter.delete(
+  "/:id",
+  velocityThrottle("delete_workspace", 500),
+  async (c) => {
+    const workspaceId = c.req.param("id");
+    const user = c.get("user");
 
-  // execute delete
-  // strictly enforce the userId so a malicious user
-  // can't send a random ID and delete someone else's project.
-  await db
-    .delete(workspaces)
-    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)));
+    // execute delete
+    // strictly enforce the userId so a malicious user
+    // can't send a random ID and delete someone else's project.
+    await db
+      .delete(workspaces)
+      .where(
+        and(eq(workspaces.id, workspaceId), eq(workspaces.userId, user.id)),
+      );
 
-  return c.json({ success: true }, 200);
-});
+    return c.json({ success: true }, 200);
+  },
+);

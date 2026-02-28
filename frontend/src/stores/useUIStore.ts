@@ -10,7 +10,6 @@ interface UIState {
   // --- Actions ---
   setIsTerminalOpen: (isOpen: boolean) => void;
   showToast: (type: ToastType, message: string) => void;
-  removeToast: (id: string) => void;
   openLoginModal: () => void;
   closeLoginModal: () => void;
 }
@@ -38,12 +37,6 @@ export const useUIStore = create<UIState>((set) => ({
         toasts: state.toasts.filter((t) => t.id !== id),
       }));
     }, 4000);
-  },
-
-  removeToast: (id) => {
-    set((state) => ({
-      toasts: state.toasts.filter((t) => t.id !== id),
-    }));
   },
 
   openLoginModal: () => set({ isLoginModalOpen: true }),

@@ -28,10 +28,23 @@ export const sendMessageStream = async function* (
       }),
     });
 
+    // 1. Session expiration
     if (response.status === 401) {
       useUIStore.getState().openLoginModal();
       yield "\n\n*[System: Authentication required. Session expired.]*";
       return;
+    }
+
+    // 2. Velocity Throttle (Chat Spam)
+    if (response.status === 429) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg =
+        errorData.error || "Velocity limit exceeded. Please slow down.";
+
+      // Optionally pop a toast AND print it in the chat
+      useUIStore.getState().showToast("error", "Rate limit exceeded");
+      yield `\n\n*[System: ${errorMsg}]*`;
+      return; // Halt stream
     }
 
     if (!response.ok || !response.body) {
