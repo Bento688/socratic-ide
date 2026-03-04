@@ -173,76 +173,24 @@ chatRouter.post(
       return c.json({ error: "Workspace not found or unauthorized" }, 403);
     }
 
-    // ===================================
-    // THE TOLLBOOTH (Financial Firewall)
-    // ===================================
-
-    const now = new Date();
-    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-
-    // === fetch user ledger ===
-    let [quota] = await db
-      .select()
-      .from(userQuotas)
-      .where(eq(userQuotas.userId, user.id))
-      .limit(1);
-
-    if (!quota) {
-      // === CASE 1 : first message ===
-      // === initialize if it's first message ===
-      await db.insert(userQuotas).values({
-        id: `qta_${randomUUID()}`,
-        userId: user.id,
-        messageCount: 0,
-        lastResetAt: now,
-      });
-      // === use mock object for the rest of the thread ===
-      quota = {
-        id: "",
-        userId: user.id,
-        messageCount: 0,
-        lastResetAt: now,
-      };
-    } else {
-      // === CASE 2 : NOT their first message
-      // === calculate time since last reset ===
-      const timeSinceLastReset = now.getTime() - quota.lastResetAt.getTime();
-
-      if (timeSinceLastReset >= TWENTY_FOUR_HOURS_MS) {
-        // === it has been more than 24 hours ===
-        await db
-          .update(userQuotas)
-          .set({ messageCount: 0, lastResetAt: now })
-          .where(eq(userQuotas.userId, user.id));
-
-        quota.messageCount = 0;
-        quota.lastResetAt = now;
-      }
-
-      // === enforcement ===
-      if (quota.messageCount >= 20) {
-        // === calculate the exact moment the lock lifts ===
-
-        const unlockTimeMs = quota.lastResetAt.getTime() + TWENTY_FOUR_HOURS_MS;
-        return c.json(
-          {
-            error: "Energy depleted",
-            unlockTime: unlockTimeMs,
-          },
-          402, // 402 payment required
-        );
-      }
+    // =========================
+    // FINANCIAL FIREWALL
+    // =========================
+    const unlockTimeMs = await enforceDailyQuota(user.id);
+    if (unlockTimeMs) {
+      return c.json(
+        { error: "Energy depleted", unlockTime: unlockTimeMs },
+        402,
+      );
     }
 
     // =====================================
     // PROCESS THE MESSAGE TO BE SENT TO LLM
     // =====================================
     const displayContent = isReview ? "Review my code." : prompt;
-    let llmPrompt = prompt;
-
-    if (isReview) {
-      llmPrompt = `[SYSTEM: USER HAS REQUESTED A CODE REVIEW]\n\nCurrent Code Snippet:\n\`\`\`${code}\n\`\`\`\n\nAnalyze this code. If it solves the objective, mark 'pass': true in metadata.`;
-    }
+    const llmPrompt = isReview
+      ? `[SYSTEM: CODE REVIEW]\n\nCode:\n\`\`\`${code}\n\`\`\`\nAnalyze this.`
+      : prompt;
 
     // === immediately save user message to db ===
     await db.insert(messages).values({
@@ -330,60 +278,8 @@ chatRouter.post(
         // ============================
         // PROCESSING THE JSON METADATA
         // ============================
-
-        // parse the JSON and securely inject system message sequentially
         if (parts.length > 1) {
-          try {
-            // === GET THE JSON AS STRING ===
-            const metadataStr = parts[1].trim();
-            const jsonStart = metadataStr.indexOf("{");
-            const jsonEnd = metadataStr.lastIndexOf("}") + 1;
-
-            if (jsonStart !== -1 && jsonEnd !== -1) {
-              // === if valid JSON (not out of bounds) ===
-              const jsonStr = metadataStr.substring(jsonStart, jsonEnd);
-              const metadata = JSON.parse(jsonStr); // convert into real JSON
-
-              // === IF USER HAS PASSED THE TEST && THERE IS A NEW OBJECTIVE ===
-              if (metadata.pass === true && metadata.newObjective) {
-                // === artifically create a 1-second delay to make sure
-                // === MySQL saves ai response first (prevent race conditions)
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-
-                // === 1. insert system message after the delay ===
-                await db.insert(messages).values({
-                  id: `msg_${randomUUID()}`,
-                  workspaceId: workspaceId,
-                  role: "system",
-                  content: `🎯 Current Task: ${metadata.newObjective}`,
-                });
-
-                // === 2. calculate the next step number directly from DB ===
-                const [latestLevel] = await db
-                  .select()
-                  .from(workspaceLevels)
-                  .where(eq(workspaceLevels.workspaceId, workspaceId))
-                  .orderBy(desc(workspaceLevels.stepNumber))
-                  .limit(1);
-
-                const nextStepNum = latestLevel
-                  ? latestLevel.stepNumber + 1
-                  : 0;
-
-                // === 3. provision the new level directly in MySQL ===
-                await db.insert(workspaceLevels).values({
-                  id: `lvl_${randomUUID()}`,
-                  workspaceId: workspaceId,
-                  stepNumber: nextStepNum,
-                  taskTitle: metadata.newObjective,
-                  codeSnapshot: metadata.newSnippet || code, // fallback to current code if empty
-                  language: metadata.language || "javascript",
-                });
-              }
-            }
-          } catch (error) {
-            console.error("Backend parsing failed for system message:", error);
-          }
+          await processLevelUpMetadata(workspaceId, code, parts[1].trim());
         }
       } catch (error) {
         console.error("Gemini API Error: ", error);
@@ -392,3 +288,108 @@ chatRouter.post(
     });
   },
 );
+
+// ===================
+// HELPER FUNCTIONS
+// ===================
+
+async function enforceDailyQuota(userId: string) {
+  const now = new Date();
+  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+  // === fetch user ledger ===
+  let [quota] = await db
+    .select()
+    .from(userQuotas)
+    .where(eq(userQuotas.userId, userId))
+    .limit(1);
+
+  // === CASE 1 : first message ===
+  // === initialize if it's first message ===
+  if (!quota) {
+    await db.insert(userQuotas).values({
+      id: `qta_${randomUUID()}`,
+      userId: userId,
+      messageCount: 0,
+      lastResetAt: now,
+    });
+
+    return null; // Null means pass
+  }
+
+  // === CASE 2 : NOT their first message
+  // === calculate time since last reset ===
+  const timeSinceLastReset = now.getTime() - quota.lastResetAt.getTime();
+
+  if (timeSinceLastReset >= TWENTY_FOUR_HOURS_MS) {
+    // === it has been more than 24 hours ===
+    // refresh the daily limit
+    await db
+      .update(userQuotas)
+      .set({ messageCount: 0, lastResetAt: now })
+      .where(eq(userQuotas.userId, userId));
+
+    return null;
+  }
+
+  // === enforcement ===
+  if (quota.messageCount >= 20) {
+    // === calculate the exact moment the lock lifts ===
+    return quota.lastResetAt.getTime() + TWENTY_FOUR_HOURS_MS;
+  }
+}
+
+async function processLevelUpMetadata(
+  workspaceId: string,
+  currentCode: string,
+  metadataStr: string,
+) {
+  // ============================
+  // PROCESSING THE JSON METADATA
+  // ============================
+
+  // parse the JSON and securely inject system message sequentially
+  // === GET THE JSON AS STRING ===
+  const jsonStart = metadataStr.indexOf("{");
+  const jsonEnd = metadataStr.lastIndexOf("}") + 1;
+
+  if (jsonStart === -1 || jsonEnd === -1) return;
+
+  // === if valid JSON (not out of bounds) ===
+  const metadata = JSON.parse(metadataStr.substring(jsonStart, jsonEnd));
+
+  // === IF USER HAS PASSED THE TEST && THERE IS A NEW OBJECTIVE ===
+  if (metadata.pass === true && metadata.newObjective) {
+    // === artifically create a 1-second delay to make sure
+    // === MySQL saves ai response first (prevent race conditions)
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // === 1. insert system message after the delay ===
+    await db.insert(messages).values({
+      id: `msg_${randomUUID()}`,
+      workspaceId: workspaceId,
+      role: "system",
+      content: `🎯 Current Task: ${metadata.newObjective}`,
+    });
+
+    // === 2. calculate the next step number directly from DB ===
+    const [latestLevel] = await db
+      .select()
+      .from(workspaceLevels)
+      .where(eq(workspaceLevels.workspaceId, workspaceId))
+      .orderBy(desc(workspaceLevels.stepNumber))
+      .limit(1);
+
+    const nextStepNum = latestLevel ? latestLevel.stepNumber + 1 : 0;
+
+    // === 3. provision the new level directly in MySQL ===
+    await db.insert(workspaceLevels).values({
+      id: `lvl_${randomUUID()}`,
+      workspaceId: workspaceId,
+      stepNumber: nextStepNum,
+      taskTitle: metadata.newObjective,
+      codeSnapshot: metadata.newSnippet || currentCode, // fallback to current code if empty
+      language: metadata.language || "javascript",
+    });
+  }
+}

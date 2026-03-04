@@ -12,9 +12,9 @@ export const levelsRouter = new Hono<AuthEnv>();
 
 levelsRouter.use("/*", requireAuth);
 
-/**
- * --- strict shape for a code snapshot (DTO) ---
- */
+// ================================================
+// strict shape for a code snapshot (DTO)
+// ================================================
 
 const updateLevelSchema = z.object({
   workspaceId: z.string(),
@@ -22,9 +22,9 @@ const updateLevelSchema = z.object({
   codeSnapshot: z.string(),
 });
 
-/**
- * --- levelsRouter ---
- */
+// =====================
+// levels router
+// =====================
 
 // PATCH => update the data of the level (code snapshots)
 levelsRouter.patch(
